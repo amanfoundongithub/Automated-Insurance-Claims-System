@@ -92,6 +92,7 @@ class ClaimLifecycleIntegrationTests(unittest.TestCase):
             SPRING_APPLICATION_NAME=application_name,
         )
         cls._start_process(
+            service,
             ["java", "-jar", str(jars[0])],
             module,
             env,
@@ -101,7 +102,10 @@ class ClaimLifecycleIntegrationTests(unittest.TestCase):
     @classmethod
     def _start_python_service(cls, service, port, log_dir):
         module = ROOT / service
+        env = os.environ.copy()
+        env["REDIS_TIMEOUT"] = "2.0"
         cls._start_process(
+            service,
             [
                 sys.executable,
                 "-m",
@@ -113,32 +117,31 @@ class ClaimLifecycleIntegrationTests(unittest.TestCase):
                 str(port),
             ],
             module,
-            os.environ.copy(),
+            env,
             log_dir / f"{service}.log",
         )
 
     @classmethod
-    def _start_process(cls, command, cwd, env, log_path):
+    def _start_process(cls, service, command, cwd, env, log_path):
         log_handle = log_path.open("w", encoding="utf-8")
         cls.log_handles.append(log_handle)
-        cls.processes.append(
-            subprocess.Popen(
-                command,
-                cwd=cwd,
-                env=env,
-                stdout=log_handle,
-                stderr=subprocess.STDOUT,
-            )
+        process = subprocess.Popen(
+            command,
+            cwd=cwd,
+            env=env,
+            stdout=log_handle,
+            stderr=subprocess.STDOUT,
         )
+        cls.processes.append((service, process))
 
     @classmethod
     def _wait_for_health(cls, url):
         deadline = time.monotonic() + 180
         while time.monotonic() < deadline:
-            for process in cls.processes:
+            for service, process in cls.processes:
                 if process.poll() is not None:
                     raise RuntimeError(
-                        f"Service exited during startup with code {process.returncode}"
+                        f"{service} exited during startup with code {process.returncode}"
                     )
             try:
                 status, result = request_json("GET", url)
@@ -151,10 +154,10 @@ class ClaimLifecycleIntegrationTests(unittest.TestCase):
 
     @classmethod
     def _stop_services(cls):
-        for process in reversed(getattr(cls, "processes", [])):
+        for _, process in reversed(getattr(cls, "processes", [])):
             if process.poll() is None:
                 process.terminate()
-        for process in reversed(getattr(cls, "processes", [])):
+        for _, process in reversed(getattr(cls, "processes", [])):
             if process.poll() is None:
                 try:
                     process.wait(timeout=20)

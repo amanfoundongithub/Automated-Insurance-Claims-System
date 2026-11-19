@@ -101,6 +101,8 @@ $$\text{Recommended Reserve} = \text{Estimated Net Payout} \times \text{Risk Mul
 
 ## 5. API Reference
 
+For the complete runnable API reference, import the [Postman collection](./Insurance%20Claims.postman_collection.json).
+
 ### Claim Ingestion
 
 ```http

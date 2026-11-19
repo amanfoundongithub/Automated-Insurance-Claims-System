@@ -1,0 +1,219 @@
+{
+  "info": {
+    "_postman_id": "c73527cf-3e19-4c99-9f09-4cd0a3e1c735",
+    "name": "Insurance Claims",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "_exporter_id": "21230870"
+  },
+  "item": [
+    {
+      "name": "Submit Insurance Claims",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Idempotency-Key",
+            "value": "postman-manual-008"
+          },
+          {
+            "key": "X-Correlation-Id",
+            "value": "corr-postman-manual-008"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"policyId\": \"pol_998877\",\n  \"policyholderId\": \"usr_12345\",\n  \"claimType\": \"TRAVEL_DELAY\",\n  \"incidentOccurredAt\": \"2026-11-18T14:15:00Z\",\n  \"claimedAmount\": {\n    \"amount\": 2000.00,\n    \"currency\": \"INR\"\n  },\n  \"incidentDetails\": {\n    \"flightNumber\": \"AI-101\",\n    \"origin\": \"HYD\",\n    \"destination\": \"LHR\",\n    \"delayHours\": 14,\n    \"reason\": \"Engine maintenance\"\n  },\n  \"attachments\": []\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "http://localhost:8081/api/v1/claims",
+          "protocol": "http",
+          "host": [
+            "localhost"
+          ],
+          "port": "8081",
+          "path": [
+            "api",
+            "v1",
+            "claims"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Claims Status",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "http://localhost:8082/api/v1/claims/clm_f31bc27e996645d7adc45990dc0acf7a",
+          "protocol": "http",
+          "host": [
+            "localhost"
+          ],
+          "port": "8082",
+          "path": [
+            "api",
+            "v1",
+            "claims",
+            "clm_f31bc27e996645d7adc45990dc0acf7a"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Claims Status (Audit)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "http://localhost:8082/api/v1/claims/clm_661a4e94b3dd431bbb35fa5fdf5e8c92/audit",
+          "protocol": "http",
+          "host": [
+            "localhost"
+          ],
+          "port": "8082",
+          "path": [
+            "api",
+            "v1",
+            "claims",
+            "clm_661a4e94b3dd431bbb35fa5fdf5e8c92",
+            "audit"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "New Insurance Policy",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"policyId\": \"pol_998877\",\n  \"policyholderId\": \"usr_12345\",\n  \"status\": \"ACTIVE\",\n  \"effectiveFrom\": \"2026-01-01T00:00:00Z\",\n  \"effectiveTo\": \"2026-12-31T23:59:59Z\",\n  \"eligibleClaimTypes\": [\"TRAVEL_DELAY\", \"BAGGAGE_LOSS\"],\n  \"maxCoverageAmount\": {\n    \"amount\": 50000.00,\n    \"currency\": \"INR\"\n  },\n  \"deductibleAmount\": {\n    \"amount\": 2500.00,\n    \"currency\": \"INR\"\n  },\n  \"coPayRatio\": 0.10\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "http://localhost:8083/api/v1/policies",
+          "protocol": "http",
+          "host": [
+            "localhost"
+          ],
+          "port": "8083",
+          "path": [
+            "api",
+            "v1",
+            "policies"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Review Risk",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "body": {
+          "mode": "raw",
+          "raw": "",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "http://127.0.0.1:8084/api/v1/risk-scores/clm_48de172fa5124b5a9f349c92ceef3f95",
+          "protocol": "http",
+          "host": [
+            "127",
+            "0",
+            "0",
+            "1"
+          ],
+          "port": "8084",
+          "path": [
+            "api",
+            "v1",
+            "risk-scores",
+            "clm_48de172fa5124b5a9f349c92ceef3f95"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Review Valuation",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "http://127.0.0.1:8085/api/v1/valuations/clm_48de172fa5124b5a9f349c92ceef3f95",
+          "protocol": "http",
+          "host": [
+            "127",
+            "0",
+            "0",
+            "1"
+          ],
+          "port": "8085",
+          "path": [
+            "api",
+            "v1",
+            "valuations",
+            "clm_48de172fa5124b5a9f349c92ceef3f95"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Approve/reject the manual review",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"reason\": \"Manually verified and confirmed.\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "http://localhost:8082/api/v1/claims/clm_e6c2c59e844e44a7acfc3b94fbc59845/reject",
+          "protocol": "http",
+          "host": [
+            "localhost"
+          ],
+          "port": "8082",
+          "path": [
+            "api",
+            "v1",
+            "claims",
+            "clm_e6c2c59e844e44a7acfc3b94fbc59845",
+            "reject"
+          ]
+        }
+      },
+      "response": []
+    }
+  ]
+}

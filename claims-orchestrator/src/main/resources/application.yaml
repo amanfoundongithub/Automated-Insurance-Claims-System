@@ -40,7 +40,7 @@ claims:
   broker:
     exchange: ${CLAIMS_BROKER_EXCHANGE}
     dlq-exchange: ${CLAIMS_BROKER_DLQ_EXCHANGE}
-    claim-submitted-queue: ${CLAIMS_CLAIM_SUBMITTED_QUEUE}
+    claim-submitted-queue: ${CLAIMS_ORCHESTRATOR_CLAIM_SUBMITTED_QUEUE:${CLAIMS_CLAIM_SUBMITTED_QUEUE}}
     claim-submitted-routing-key: ${CLAIMS_CLAIM_SUBMITTED_ROUTING_KEY}
     policy-validated-queue: ${CLAIMS_POLICY_VALIDATED_QUEUE}
     policy-validated-routing-key: ${CLAIMS_POLICY_VALIDATED_ROUTING_KEY}

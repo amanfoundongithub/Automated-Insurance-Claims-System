@@ -198,6 +198,7 @@ jobs:
       CLAIMS_BROKER_EXCHANGE: claims.events.topic
       CLAIMS_BROKER_DLQ_EXCHANGE: claims.events.dlx
       CLAIMS_CLAIM_SUBMITTED_QUEUE: q.policy.claim-submitted
+      CLAIMS_ORCHESTRATOR_CLAIM_SUBMITTED_QUEUE: q.orchestrator.claim-submitted
       CLAIMS_CLAIM_SUBMITTED_ROUTING_KEY: claim.submitted
       CLAIMS_POLICY_VALIDATED_QUEUE: q.orchestrator.policy-validated
       CLAIMS_POLICY_VALIDATED_ROUTING_KEY: policy.validated

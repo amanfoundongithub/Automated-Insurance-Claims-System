@@ -1,14 +1,42 @@
 from datetime import datetime, timezone
+from decimal import Decimal
 import json
 import logging
 import uuid
 import aio_pika
+from bson.decimal128 import Decimal128
 from app.config import settings
-from app.db import outbox_events_col, processed_events_col, redis_client, risk_scores_col
-from app.models import EventEnvelope, PolicyValidatedPayload
+from app.db import (
+    claims_col,
+    outbox_events_col,
+    processed_events_col,
+    redis_client,
+    risk_scores_col,
+)
+from app.models import EventEnvelope, Money, PolicyValidatedPayload
 from app.scoring import compute_risk_score
 
 logger = logging.getLogger(__name__)
+
+
+def _to_decimal(val) -> Decimal | None:
+    if val is None:
+        return None
+    if isinstance(val, Decimal128):
+        return val.to_decimal()
+    if isinstance(val, Decimal):
+        return val
+    return Decimal(str(val))
+
+
+def _extract_money(money_obj) -> Money | None:
+    if not isinstance(money_obj, dict):
+        return None
+    amt = _to_decimal(money_obj.get("amount"))
+    cur = money_obj.get("currency")
+    if amt is None or not cur:
+        return None
+    return Money(amount=amt, currency=cur)
 
 
 async def process_policy_validated(raw_body: bytes) -> None:
@@ -25,7 +53,23 @@ async def process_policy_validated(raw_body: bytes) -> None:
         await redis_client.set(redis_key, "1", ex=settings.dedup_ttl_hours * 3600)
         return
 
-    score, tier, flags, manual_review = compute_risk_score(payload)
+    updates = {}
+
+    if payload.claimedAmount is None or (
+        payload.claimedAmount.amount is not None and payload.claimedAmount.amount <= Decimal("0")
+    ):
+        claim_doc = await claims_col.find_one({"_id": claim_id})
+        fallback_claimed = _extract_money(claim_doc.get("claimedAmount")) if isinstance(claim_doc, dict) else None
+        if fallback_claimed is not None:
+            updates["claimedAmount"] = fallback_claimed
+
+        claim_attachments = claim_doc.get("attachments") if isinstance(claim_doc, dict) else None
+        fallback_attachment_count = len(claim_attachments) if isinstance(claim_attachments, list) else 0
+        if getattr(payload, "attachmentCount", 0) == 0 and fallback_attachment_count > 0:
+            updates["attachmentCount"] = fallback_attachment_count
+
+    scoring_payload = payload.model_copy(update=updates) if updates else payload
+    score, tier, flags, manual_review = compute_risk_score(scoring_payload)
     now = datetime.now(timezone.utc)
     outbox_event_id = str(uuid.uuid4())
 
@@ -90,7 +134,7 @@ async def process_policy_validated(raw_body: bytes) -> None:
     )
 
 
-async def start_consumer() -> None:
+async def start_consumer() -> aio_pika.abc.AbstractRobustConnection:
     connection = await aio_pika.connect_robust(
         host=settings.rabbitmq_host,
         port=settings.rabbitmq_port,

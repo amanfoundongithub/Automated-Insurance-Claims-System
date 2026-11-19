@@ -10,8 +10,8 @@ valuations_col = db["claim_valuations"]
 processed_events_col = db["valuation_processed_events"]
 outbox_events_col = db["valuation_outbox_events"]
 
-# Read collections from upstream services (for claim amount & policy deductible/co-pay/coverage)
-claim_lifecycle_col = db["claim_lifecycle"]
+# Read collections from upstream services
+claims_col = db["claims"]
 policies_col = db["policies"]
 
 redis_client = aioredis.Redis(

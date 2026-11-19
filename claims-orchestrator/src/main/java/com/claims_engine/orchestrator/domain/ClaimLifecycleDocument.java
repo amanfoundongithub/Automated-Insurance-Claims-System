@@ -39,6 +39,14 @@ public class ClaimLifecycleDocument {
     private String riskTier;
     private List<String> riskFlags;
     private Boolean requiresManualReview;
+    private Money eligibleGrossAmount;
+    private Money deductibleAppliedAmount;
+    private Money coPayDeductionAmount;
+    private Money estimatedNetPayout;
+    private Money recommendedReserve;
+    private String settlementReference;
+    private Instant settledAt;
+    private String decisionReason;
 
     @CreatedDate
     private Instant createdAt;
@@ -115,4 +123,28 @@ public class ClaimLifecycleDocument {
 
     public Instant getUpdatedAt() { return updatedAt; }
     public void setUpdatedAt(Instant updatedAt) { this.updatedAt = updatedAt; }
+
+    public Money getEligibleGrossAmount() { return eligibleGrossAmount; }
+    public void setEligibleGrossAmount(Money eligibleGrossAmount) { this.eligibleGrossAmount = eligibleGrossAmount; }
+
+    public Money getDeductibleAppliedAmount() { return deductibleAppliedAmount; }
+    public void setDeductibleAppliedAmount(Money deductibleAppliedAmount) { this.deductibleAppliedAmount = deductibleAppliedAmount; }
+
+    public Money getCoPayDeductionAmount() { return coPayDeductionAmount; }
+    public void setCoPayDeductionAmount(Money coPayDeductionAmount) { this.coPayDeductionAmount = coPayDeductionAmount; }
+
+    public Money getEstimatedNetPayout() { return estimatedNetPayout; }
+    public void setEstimatedNetPayout(Money estimatedNetPayout) { this.estimatedNetPayout = estimatedNetPayout; }
+
+    public Money getRecommendedReserve() { return recommendedReserve; }
+    public void setRecommendedReserve(Money recommendedReserve) { this.recommendedReserve = recommendedReserve; }
+
+    public String getSettlementReference() { return settlementReference; }
+    public void setSettlementReference(String settlementReference) { this.settlementReference = settlementReference; }
+
+    public Instant getSettledAt() { return settledAt; }
+    public void setSettledAt(Instant settledAt) { this.settledAt = settledAt; }
+
+    public String getDecisionReason() { return decisionReason; }
+    public void setDecisionReason(String decisionReason) { this.decisionReason = decisionReason; }
 }

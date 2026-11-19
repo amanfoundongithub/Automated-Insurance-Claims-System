@@ -27,7 +27,7 @@ spring:
         retry:
           enabled: ${RABBITMQ_LISTENER_SIMPLE_RETRY_ENABLED}
           initial-interval: ${RABBITMQ_LISTENER_SIMPLE_RETRY_INITIAL_INTERVAL}
-          max-attempts: ${RABBITMQ_LISTENER_SIMPLE_RETRY_MAX_ATTEMPTS}
+          max-retries: ${RABBITMQ_LISTENER_SIMPLE_RETRY_MAX_ATTEMPTS}
           multiplier: ${RABBITMQ_LISTENER_SIMPLE_RETRY_MULTIPLIER}
 
 management:
@@ -48,5 +48,7 @@ claims:
     policy-validation-failed-routing-key: ${CLAIMS_POLICY_VALIDATION_FAILED_ROUTING_KEY}
     risk-scored-queue: ${CLAIMS_RISK_SCORED_QUEUE}
     risk-scored-routing-key: ${CLAIMS_RISK_SCORED_ROUTING_KEY}
+    valuation-completed-queue: ${CLAIMS_VALUATION_COMPLETED_QUEUE}
+    valuation-completed-routing-key: ${CLAIMS_VALUATION_COMPLETED_ROUTING_KEY}
   dedup:
     redis-ttl-hours: ${CLAIMS_DEDUP_REDIS_TTL_HOURS}

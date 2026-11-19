@@ -5,7 +5,7 @@ import uuid
 import aio_pika
 from app.config import settings
 from app.db import (
-    claim_lifecycle_col,
+    claims_col,
     outbox_events_col,
     policies_col,
     processed_events_col,
@@ -33,7 +33,7 @@ async def process_risk_scored(raw_body: bytes) -> None:
         await redis_client.set(redis_key, "1", ex=settings.dedup_ttl_hours * 3600)
         return
 
-    claim_doc = await claim_lifecycle_col.find_one({"_id": claim_id})
+    claim_doc = await claims_col.find_one({"_id": claim_id})
     policy_doc = await policies_col.find_one({"_id": policy_id})
 
     result = calculate_valuation(claim_doc, policy_doc, payload.riskTier)

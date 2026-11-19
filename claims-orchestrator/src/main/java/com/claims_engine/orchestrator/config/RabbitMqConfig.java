@@ -45,6 +45,12 @@ public class RabbitMqConfig {
     @Value("${claims.broker.risk-scored-routing-key:risk.scored}")
     private String riskScoredRoutingKey;
 
+    @Value("${claims.broker.valuation-completed-queue:q.orchestrator.valuation-completed}")
+    private String valuationCompletedQueueName;
+
+    @Value("${claims.broker.valuation-completed-routing-key:valuation.completed}")
+    private String valuationCompletedRoutingKey;
+
     @Bean
     public TopicExchange claimsEventsExchange() {
         return ExchangeBuilder.topicExchange(exchangeName)
@@ -150,6 +156,24 @@ public class RabbitMqConfig {
         return BindingBuilder.bind(riskScoredQueue)
                 .to(claimsEventsExchange)
                 .with(riskScoredRoutingKey);
+    }
+
+    @Bean
+    public Queue valuationCompletedQueue() {
+        return QueueBuilder.durable(valuationCompletedQueueName)
+                .withArgument("x-dead-letter-exchange", dlqExchangeName)
+                .withArgument("x-dead-letter-routing-key", "orchestrator.dlq")
+                .build();
+    }
+
+    @Bean
+    public Binding valuationCompletedBinding(
+            Queue valuationCompletedQueue,
+            TopicExchange claimsEventsExchange
+    ) {
+        return BindingBuilder.bind(valuationCompletedQueue)
+                .to(claimsEventsExchange)
+                .with(valuationCompletedRoutingKey);
     }
 
 }

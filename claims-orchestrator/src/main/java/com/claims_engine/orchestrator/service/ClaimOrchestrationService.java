@@ -12,6 +12,8 @@ import com.claims_engine.orchestrator.messaging.EventEnvelope;
 import com.claims_engine.orchestrator.messaging.PolicyValidatedPayload;
 import com.claims_engine.orchestrator.messaging.PolicyValidationFailedPayload;
 import com.claims_engine.orchestrator.messaging.RiskScoredPayload;
+import com.claims_engine.orchestrator.messaging.ValuationCompletedPayload;
+
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
@@ -217,6 +219,187 @@ public class ClaimOrchestrationService {
         markProcessed(redisKey, eventId, claimId, envelope);
     }
 
+    @Transactional
+    public void handleValuationCompleted(EventEnvelope<ValuationCompletedPayload> envelope) {
+        UUID eventId = envelope.eventId();
+        ValuationCompletedPayload payload = envelope.payload();
+        String claimId = payload.claimId();
+        String redisKey = "orch:dedup:event:" + eventId;
+
+        if (isDuplicate(redisKey, eventId, claimId)) {
+            return;
+        }
+
+        ClaimLifecycleDocument lifecycle = getOrCreateLifecycle(claimId, payload.policyId(), payload.policyholderId());
+        ClaimLifecycleStatus previousStatus = lifecycle.getStatus();
+
+        ClaimLifecycleStatus targetStatus = payload.requiresManualReview()
+                ? ClaimLifecycleStatus.PENDING_MANUAL_REVIEW
+                : ClaimLifecycleStatus.VALUATION_COMPLETED;
+
+        lifecycle.setEligibleGrossAmount(payload.eligibleGrossAmount());
+        lifecycle.setDeductibleAppliedAmount(payload.deductibleAmount());
+        lifecycle.setCoPayDeductionAmount(payload.coPayDeductionAmount());
+        lifecycle.setEstimatedNetPayout(payload.estimatedNetPayout());
+        lifecycle.setRecommendedReserve(payload.recommendedReserve());
+
+        if (payload.requiresManualReview()) {
+            lifecycle.setRequiresManualReview(true);
+        }
+
+        boolean willAdvance = shouldAdvanceStatus(previousStatus, targetStatus);
+        ClaimLifecycleStatus newStatus = willAdvance ? targetStatus : previousStatus;
+
+        if (willAdvance) {
+            lifecycle.setStatus(targetStatus);
+            lifecycle.setLastEventType(envelope.eventType());
+        }
+
+        lifecycle.setCorrelationId(envelope.correlationId());
+
+        String payoutStr = payload.estimatedNetPayout() != null
+                ? payload.estimatedNetPayout().amount() + " " + payload.estimatedNetPayout().currency()
+                : "N/A";
+        String reserveStr = payload.recommendedReserve() != null
+                ? payload.recommendedReserve().amount() + " " + payload.recommendedReserve().currency()
+                : "N/A";
+
+        String notes = String.format(
+                "Valuation completed: netPayout=%s, reserve=%s, manualReview=%s%s",
+                payoutStr,
+                reserveStr,
+                payload.requiresManualReview(),
+                willAdvance ? "" : " (status maintained at " + previousStatus + ")"
+        );
+
+        recordTransition(lifecycle, previousStatus, newStatus, envelope, notes);
+        markProcessed(redisKey, eventId, claimId, envelope);
+
+        // Auto-Settlement Progression when manual review is not required
+        if (!payload.requiresManualReview() && shouldAdvanceStatus(lifecycle.getStatus(), ClaimLifecycleStatus.SETTLEMENT_PENDING)) {
+            Instant settledNow = Instant.now();
+            String settlementRef = "stl_" + UUID.randomUUID().toString().replace("-", "").substring(0, 16);
+
+            ClaimLifecycleStatus prevBeforeSettlement = lifecycle.getStatus();
+            lifecycle.setStatus(ClaimLifecycleStatus.SETTLEMENT_PENDING);
+            lifecycle.setLastEventType("SettlementInitiated");
+            lifecycle.setSettlementReference(settlementRef);
+            recordTransition(
+                    lifecycle,
+                    prevBeforeSettlement,
+                    ClaimLifecycleStatus.SETTLEMENT_PENDING,
+                    envelope,
+                    "Auto-settlement initiated with reference=" + settlementRef
+            );
+
+            boolean hasPositivePayout = payload.estimatedNetPayout() != null
+                    && payload.estimatedNetPayout().amount() != null
+                    && payload.estimatedNetPayout().amount().signum() > 0;
+
+            ClaimLifecycleStatus finalStatus = hasPositivePayout
+                    ? ClaimLifecycleStatus.APPROVED
+                    : ClaimLifecycleStatus.REJECTED;
+
+            String finalReason = hasPositivePayout
+                    ? "Claim approved for payout (" + payoutStr + "), ref=" + settlementRef
+                    : "Claim rejected after valuation: net payout is zero or non-positive";
+
+            ClaimLifecycleStatus prevBeforeFinal = lifecycle.getStatus();
+            lifecycle.setStatus(finalStatus);
+            lifecycle.setLastEventType(hasPositivePayout ? "ClaimApproved" : "ClaimRejected");
+            lifecycle.setSettledAt(settledNow);
+            lifecycle.setDecisionReason(finalReason);
+            recordTransition(
+                    lifecycle,
+                    prevBeforeFinal,
+                    finalStatus,
+                    envelope,
+                    finalReason
+            );
+        }
+    }
+
+    @Transactional
+    public ClaimLifecycleDocument approveClaim(String claimId, String reason) {
+        ClaimLifecycleDocument lifecycle = lifecycleRepository.findById(claimId)
+                .orElseThrow(() -> new IllegalArgumentException("Claim not found: " + claimId));
+
+        if (lifecycle.getStatus() == ClaimLifecycleStatus.APPROVED || lifecycle.getStatus() == ClaimLifecycleStatus.REJECTED) {
+            throw new IllegalStateException("Claim already finalized with status=" + lifecycle.getStatus());
+        }
+
+        Instant now = Instant.now();
+        String settlementRef = lifecycle.getSettlementReference() != null
+                ? lifecycle.getSettlementReference()
+                : "stl_" + UUID.randomUUID().toString().replace("-", "").substring(0, 16);
+
+        ClaimLifecycleStatus previousStatus = lifecycle.getStatus();
+        String resolvedReason = (reason != null && !reason.isBlank())
+                ? reason
+                : "Approved after manual review; settlementRef=" + settlementRef;
+
+        lifecycle.setSettlementReference(settlementRef);
+        lifecycle.setSettledAt(now);
+        lifecycle.setDecisionReason(resolvedReason);
+        lifecycle.setStatus(ClaimLifecycleStatus.APPROVED);
+        lifecycle.setLastEventType("ManualClaimApproved");
+
+        ClaimAuditLogDocument auditEntry = new ClaimAuditLogDocument();
+        auditEntry.setAuditId("aud_" + UUID.randomUUID().toString().replace("-", ""));
+        auditEntry.setClaimId(claimId);
+        auditEntry.setEventId(UUID.randomUUID());
+        auditEntry.setEventType("ManualClaimApproved");
+        auditEntry.setPreviousStatus(previousStatus);
+        auditEntry.setNewStatus(ClaimLifecycleStatus.APPROVED);
+        auditEntry.setCorrelationId(lifecycle.getCorrelationId());
+        auditEntry.setCausationId(null);
+        auditEntry.setNotes(resolvedReason);
+        auditEntry.setOccurredAt(now);
+        auditEntry.setCreatedAt(now);
+
+        lifecycleRepository.save(lifecycle);
+        auditLogRepository.save(auditEntry);
+        return lifecycle;
+    }
+
+    @Transactional
+    public ClaimLifecycleDocument rejectClaim(String claimId, String reason) {
+        ClaimLifecycleDocument lifecycle = lifecycleRepository.findById(claimId)
+                .orElseThrow(() -> new IllegalArgumentException("Claim not found: " + claimId));
+
+        if (lifecycle.getStatus() == ClaimLifecycleStatus.APPROVED || lifecycle.getStatus() == ClaimLifecycleStatus.REJECTED) {
+            throw new IllegalStateException("Claim already finalized with status=" + lifecycle.getStatus());
+        }
+
+        Instant now = Instant.now();
+        ClaimLifecycleStatus previousStatus = lifecycle.getStatus();
+        String resolvedReason = (reason != null && !reason.isBlank())
+                ? reason
+                : "Rejected after manual review";
+
+        lifecycle.setSettledAt(now);
+        lifecycle.setDecisionReason(resolvedReason);
+        lifecycle.setStatus(ClaimLifecycleStatus.REJECTED);
+        lifecycle.setLastEventType("ManualClaimRejected");
+
+        ClaimAuditLogDocument auditEntry = new ClaimAuditLogDocument();
+        auditEntry.setAuditId("aud_" + UUID.randomUUID().toString().replace("-", ""));
+        auditEntry.setClaimId(claimId);
+        auditEntry.setEventId(UUID.randomUUID());
+        auditEntry.setEventType("ManualClaimRejected");
+        auditEntry.setPreviousStatus(previousStatus);
+        auditEntry.setNewStatus(ClaimLifecycleStatus.REJECTED);
+        auditEntry.setCorrelationId(lifecycle.getCorrelationId());
+        auditEntry.setCausationId(null);
+        auditEntry.setNotes(resolvedReason);
+        auditEntry.setOccurredAt(now);
+        auditEntry.setCreatedAt(now);
+
+        lifecycleRepository.save(lifecycle);
+        auditLogRepository.save(auditEntry);
+        return lifecycle;
+    }
+
     private boolean shouldAdvanceStatus(ClaimLifecycleStatus current, ClaimLifecycleStatus target) {
         if (current == null) {
             return true;
@@ -236,6 +419,7 @@ public class ClaimOrchestrationService {
             case RISK_SCORING_PENDING -> 4;
             case RISK_SCORED, PENDING_MANUAL_REVIEW -> 5;
             case VALUATION_PENDING -> 6;
+            case VALUATION_COMPLETED -> 6;
             case SETTLEMENT_PENDING -> 7;
             case APPROVED, REJECTED -> 8;
         };

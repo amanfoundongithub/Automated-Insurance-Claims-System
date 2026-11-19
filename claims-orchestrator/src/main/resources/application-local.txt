@@ -26,3 +26,5 @@ CLAIMS_POLICY_VALIDATION_FAILED_QUEUE: q.orchestrator.policy-validation-failed
 CLAIMS_POLICY_VALIDATION_FAILED_ROUTING_KEY: policy.validation-failed
 CLAIMS_RISK_SCORED_QUEUE: q.orchestrator.risk-scored
 CLAIMS_RISK_SCORED_ROUTING_KEY: risk.scored
+CLAIMS_VALUATION_COMPLETED_QUEUE: q.orchestrator.valuation-completed
+CLAIMS_VALUATION_COMPLETED_ROUTING_KEY: valuation.completed

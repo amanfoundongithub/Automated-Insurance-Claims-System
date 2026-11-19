@@ -8,6 +8,7 @@ db = mongo_client.get_default_database()
 risk_scores_col = db["claim_risk_scores"]
 processed_events_col = db["risk_processed_events"]
 outbox_events_col = db["risk_outbox_events"]
+claims_col = db["claims"]
 
 redis_client = aioredis.Redis(
     host=settings.redis_host,

@@ -16,7 +16,6 @@ import com.claims_engine.ingestion.domain.ClaimRepository;
 import com.claims_engine.ingestion.domain.ClaimStatus;
 import com.claims_engine.ingestion.domain.Money;
 import com.claims_engine.ingestion.messaging.ClaimSubmittedPayload;
-import com.claims_engine.ingestion.messaging.EventEnvelope;
 import com.claims_engine.ingestion.outbox.OutboxEventDocument;
 import com.claims_engine.ingestion.outbox.OutboxRepository;
 import java.math.BigDecimal;

@@ -3,6 +3,7 @@ import os
 import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
+
 from bson.decimal128 import Decimal128
 
 os.environ.setdefault("MONGODB_URI", "mongodb://localhost/test")

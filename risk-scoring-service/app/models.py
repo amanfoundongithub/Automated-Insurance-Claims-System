@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Generic, Optional, TypeVar
+
 from pydantic import BaseModel, Field
 
 T = TypeVar("T")

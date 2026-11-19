@@ -9,8 +9,60 @@ permissions:
   contents: read
 
 jobs:
+  lint:
+    name: Lint / ${{ matrix.service }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - service: claims-ingestion-service
+            language: java
+          - service: policy-service
+            language: java
+          - service: settlement-payout-service
+            language: java
+          - service: claims-orchestrator
+            language: java
+          - service: risk-scoring-service
+            language: python
+          - service: valuation-reserve-service
+            language: python
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        if: matrix.language == 'java'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: gradle
+
+      - name: Run Checkstyle
+        if: matrix.language == 'java'
+        working-directory: ${{ matrix.service }}
+        run: ./gradlew --no-daemon checkstyleMain checkstyleTest
+
+      - name: Set up Python
+        if: matrix.language == 'python'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+
+      - name: Install Ruff
+        if: matrix.language == 'python'
+        run: python -m pip install ruff==0.17.5
+
+      - name: Run Ruff
+        if: matrix.language == 'python'
+        working-directory: ${{ matrix.service }}
+        run: python -m ruff check --select E4,E7,E9,F,I app tests
+
   java:
     name: Java tests / ${{ matrix.service }}
+    needs: lint
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -47,6 +99,7 @@ jobs:
 
   python:
     name: Python tests / ${{ matrix.service }}
+    needs: lint
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false

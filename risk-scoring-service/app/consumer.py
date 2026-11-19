@@ -1,10 +1,12 @@
-from datetime import datetime, timezone
-from decimal import Decimal
 import json
 import logging
 import uuid
+from datetime import datetime, timezone
+from decimal import Decimal
+
 import aio_pika
 from bson.decimal128 import Decimal128
+
 from app.config import settings
 from app.db import (
     claims_col,

@@ -1,8 +1,10 @@
 import asyncio
-from datetime import datetime, timezone
 import json
 import logging
+from datetime import datetime, timezone
+
 import aio_pika
+
 from app.config import settings
 from app.db import outbox_events_col
 

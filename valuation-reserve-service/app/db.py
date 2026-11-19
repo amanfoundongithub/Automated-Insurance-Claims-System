@@ -1,5 +1,6 @@
-from motor.motor_asyncio import AsyncIOMotorClient
 import redis.asyncio as aioredis
+from motor.motor_asyncio import AsyncIOMotorClient
+
 from app.config import settings
 
 mongo_client = AsyncIOMotorClient(settings.mongodb_uri, uuidRepresentation="standard")

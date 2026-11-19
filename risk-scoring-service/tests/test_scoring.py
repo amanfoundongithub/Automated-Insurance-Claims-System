@@ -1,5 +1,5 @@
-from decimal import Decimal
 import unittest
+from decimal import Decimal
 
 from app.models import Money, PolicyValidatedPayload
 from app.scoring import compute_risk_score

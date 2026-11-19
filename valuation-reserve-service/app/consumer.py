@@ -1,8 +1,10 @@
-from datetime import datetime, timezone
 import json
 import logging
 import uuid
+from datetime import datetime, timezone
+
 import aio_pika
+
 from app.config import settings
 from app.db import (
     claims_col,

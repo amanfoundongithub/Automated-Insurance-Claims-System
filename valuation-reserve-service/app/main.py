@@ -1,7 +1,9 @@
 import asyncio
-from contextlib import asynccontextmanager
 import logging
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, HTTPException
+
 from app.config import settings
 from app.consumer import start_consumer
 from app.db import valuations_col

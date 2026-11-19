@@ -1,0 +1,91 @@
+name: Tests and coverage
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  java:
+    name: Java tests / ${{ matrix.service }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        service:
+          - claims-ingestion-service
+          - policy-service
+          - settlement-payout-service
+          - claims-orchestrator
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: gradle
+
+      - name: Run tests and generate JaCoCo reports
+        working-directory: ${{ matrix.service }}
+        run: ./gradlew --no-daemon clean test jacocoTestReport
+
+      - name: Upload test and coverage reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reports-${{ matrix.service }}
+          if-no-files-found: warn
+          path: |
+            ${{ matrix.service }}/build/test-results/test/
+            ${{ matrix.service }}/build/reports/jacoco/test/
+
+  python:
+    name: Python tests / ${{ matrix.service }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        service:
+          - risk-scoring-service
+          - valuation-reserve-service
+    defaults:
+      run:
+        working-directory: ${{ matrix.service }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+          cache: pip
+          cache-dependency-path: ${{ matrix.service }}/requirements.txt
+
+      - name: Install service and coverage dependencies
+        run: python -m pip install -r requirements.txt coverage
+
+      - name: Run tests and generate coverage reports
+        env:
+          MONGODB_URI: mongodb://localhost/test
+        run: |
+          python -m coverage run --branch --source=app -m unittest discover -s tests -v
+          python -m coverage report --show-missing
+          python -m coverage xml -o coverage.xml
+          python -m coverage html -d htmlcov
+
+      - name: Upload test and coverage reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reports-${{ matrix.service }}
+          if-no-files-found: warn
+          path: |
+            ${{ matrix.service }}/coverage.xml
+            ${{ matrix.service }}/htmlcov/

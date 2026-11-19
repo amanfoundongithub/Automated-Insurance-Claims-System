@@ -1,8 +1,8 @@
 # Event-Driven Insurance Claims Processing & Settlement Engine
 
-An enterprise-grade, distributed claims processing platform designed to orchestrate the end-to-end lifecycle of insurance claims—from initial submission through policy validation, rule-based risk scoring, financial valuation, and settlement/approval.
+An enterprise-grade, distributed claims processing platform designed to orchestrate the end-to-end lifecycle of insurance claims—from initial submission through policy validation, rule-based risk scoring, financial valuation, and settlement/payout execution.
 
-The platform utilizes an **event-driven choreography and orchestration architecture** backed by **RabbitMQ**, asynchronous database operations in **MongoDB**, and **Redis** for distributed deduplication and idempotency.
+The platform utilizes an **event-driven choreography and orchestration architecture** backed by **RabbitMQ** (`claims.events.topic` / `claims.events.dlx`), asynchronous database operations in **MongoDB** (`UuidRepresentation.STANDARD`), and **Redis** for distributed deduplication and idempotency.
 
 ---
 
@@ -21,27 +21,35 @@ The platform utilizes an **event-driven choreography and orchestration architect
 └─────────────────────────┘                                 │   - State Machine       │
            │                                                │   - Audit Logs          │
            ▼                                                │   - Manual Decisions    │
-┌─────────────────────────┐                                 │   - Auto-Settlement     │
-│   risk-scoring-service  │ ── (RiskScored) ──────────────► │                         │
-└─────────────────────────┘                                 └─────────────────────────┘
-           │                                                              ▲
-           ▼                                                              │
-┌─────────────────────────┐                                               │
-│ valuation-reserve-serv. │ ── (ValuationCompleted) ──────────────────────┘
+┌─────────────────────────┐                                 │   - Settlement Dispatch │
+│   risk-scoring-service  │ ── (RiskScored) ──────────────► └────────────┬────────────┘
+└─────────────────────────┘                                              │
+           │                                            (SettlementRequested)
+           ▼                                                             ▼
+┌─────────────────────────┐                                 ┌─────────────────────────┐
+│ valuation-reserve-serv. │ ── (ValuationCompleted) ──────► │ settlement-payout-serv. │
+└─────────────────────────┘                                 │ - Payout Persistence    │
+                                                            │ - Idempotency & Audit   │
+       ┌────────────────────────────────────────────────────┤ - Rail Execution        │
+       │ (SettlementCompleted / SettlementFailed)           └─────────────────────────┘
+       ▼
+┌─────────────────────────┐
+│   claims-orchestrator   │ ──► APPROVED or PENDING_MANUAL_REVIEW
 └─────────────────────────┘
 
 ```
 
 ### Event Lifecycle & Transitions
 
-1. **`ClaimSubmitted`**: The claim is accepted at ingestion, validated, stored in MongoDB (`claims`), and published to the message broker.
+1. **`ClaimSubmitted`**: The claim is accepted at ingestion, validated, stored in MongoDB (`claims`), and published to `claims.events.topic` (`claim.submitted`).
 2. **`PolicyValidated` / `PolicyValidationFailed**`: Policy terms (`maxCoverageAmount`, `deductibleAmount`, `coPayRatio`, active coverage window) are verified.
 3. **`RiskScored`**: Rules evaluate coverage utilization (`claimedAmount / maxCoverageAmount`), attachment verification, and claim history. Claims are tiered into `LOW`, `MEDIUM`, or `HIGH` risk.
 4. **`ValuationCompleted`**: Financial math calculates gross eligible payout, applies deductible and co-pay deductions, determines `netPayout`, and calculates actuarial loss reserves based on the assigned risk tier.
-5. **Settlement / Review**:
-* **Auto-Settlement**: If `requiresManualReview == false` and `netPayout > 0`, the claim advances to `SETTLEMENT_PENDING` and automatically resolves to `APPROVED` with a generated settlement reference.
+5. **Settlement & Underwriting Review**:
+* **Auto-Settlement Dispatch**: If `requiresManualReview == false` and `netPayout > 0`, `claims-orchestrator` transitions the claim to `SETTLEMENT_PENDING` and publishes `SettlementRequested` (`settlement.requested`) to `settlement-payout-service`.
 * **Zero Payout**: If `netPayout <= 0` (e.g., claimed amount is below deductible), the claim automatically resolves to `REJECTED`.
-* **Manual Review**: High/medium risk flags or coverage utilization thresholds park the claim in `PENDING_MANUAL_REVIEW`, awaiting reviewer decisions via `/approve` or `/reject`.
+* **Manual Review**: High/medium risk flags or coverage utilization thresholds park the claim in `PENDING_MANUAL_REVIEW` awaiting reviewer decisions via `/approve` or `/reject`. Approving dispatches `SettlementRequested` and moves the claim to `SETTLEMENT_PENDING`.
+* **Payout Execution & Outcome**: `settlement-payout-service` progresses payouts through `INITIATED` → `PROCESSING` → `SETTLED` (or `FAILED`), records append-only payout audit logs, and emits `SettlementCompleted` (`settlement.completed`) or `SettlementFailed` (`settlement.failed`). `claims-orchestrator` then transitions `SETTLEMENT_PENDING` → `APPROVED` (storing `payoutId`, `providerReference`, and `settledAt`) or `PENDING_MANUAL_REVIEW` on failure.
 
 
 
@@ -55,17 +63,18 @@ The platform utilizes an **event-driven choreography and orchestration architect
 | **`policy-service`** | Python / FastAPI / aio-pika | `8083` | Validates policy existence, active status, coverage dates, and deductible limits. |
 | **`risk-scoring-service`** | Python / FastAPI / aio-pika | `8084` | Evaluates coverage utilization ratios and attachment presence; assigns risk score, tier, and review flag. |
 | **`valuation-reserve-service`** | Python / FastAPI / aio-pika | `8085` | Executes financial payout math (`gross - deductible - copay`) and recommends actuarial loss reserves. |
-| **`claims-orchestrator`** | Spring Boot / Java | `8082` | Maintains central claim lifecycle status machine, distributed tracing (`correlationId`/`causationId`), audit trail, auto-settlement, and manual review endpoints. |
+| **`claims-orchestrator`** | Spring Boot / Java | `8082` | Maintains central claim lifecycle state machine, distributed tracing (`correlationId`/`causationId`), audit trail, `SettlementRequested` dispatch, `SettlementCompleted`/`SettlementFailed` handling, and manual review endpoints. |
+| **`settlement-payout-service`** | Spring Boot 4.1.2 / Java 25 / Groovy Gradle | `8086` | Consumes `SettlementRequested`, manages payout state (`INITIATED` → `PROCESSING` → `SETTLED`/`FAILED`) and `payout_audit_logs`, enforces dual-layer idempotency, emits `SettlementCompleted`/`SettlementFailed`, and exposes payout/audit query endpoints. |
 
 ---
 
 ## 3. Distributed Systems & Reliability Patterns
 
-* **Guaranteed Idempotency:** Redis keys (`*:dedup:event:{eventId}`) backed by persistent MongoDB collections (`processed_events`) ensure replay protection across all asynchronous consumers.
-* **Traceability & Auditing:** Every event carries immutable `correlationId` and `causationId` attributes. Every state transition is recorded in the append-only `claim_audit_logs` collection.
-* **Dead Letter Queues (DLQ):** Failed messages are routed to dedicated DLQs (e.g., `q.risk-scoring.dlq`, `q.valuation-reserve.dlq`) to prevent broker head-of-line blocking.
-* **Transactional Outbox / Idempotent Producers:** Outbox document collections ensure reliable event emission decoupling local writes from message broker availability.
-* **Data Consistency Fallbacks:** Downstream scoring and valuation services use resilient fallbacks against primary MongoDB collections (`claims`, `policies`) when payloads require supplementary context.
+* **Guaranteed Idempotency:** Redis keys (`*:dedup:event:{eventId}`) backed by persistent MongoDB collections (`processed_events` keyed by `UUID eventId`) ensure replay protection across `claims-orchestrator` and `settlement-payout-service`.
+* **Traceability & Auditing:** Every event uses a standardized `EventEnvelope<T>` (`eventId`, `eventType`, `eventVersion`, `occurredAt`, `producer`, `correlationId`, `causationId`, `partitionKey`, `payload`) with immutable `correlationId` and `causationId` chaining. Every state transition is recorded in append-only audit collections (`claim_audit_logs` and `payout_audit_logs`).
+* **Dead Letter Queues (DLQ):** Failed or unrecoverable messages route to dedicated DLX/DLQ topologies (`claims.events.dlx`, e.g., `q.orchestrator.dlq`, `q.settlement.dlq`) to prevent broker head-of-line blocking.
+* **Transactional Outbox / Idempotent Producers:** Outbox document collections and deterministic settlement references (`stl_...`) decouple local state persistence from broker delivery.
+* **Data Consistency Fallbacks:** Downstream services use resilient fallbacks against primary MongoDB collections and Redis/Mongo deduplication checks when replaying or recovering events.
 
 ---
 
@@ -101,7 +110,7 @@ $$\text{Recommended Reserve} = \text{Estimated Net Payout} \times \text{Risk Mul
 
 ## 5. API Reference
 
-For the complete runnable API reference, import the [Postman collection](./Insurance%20Claims.postman_collection.json).
+For the complete runnable API reference, import the [Postman collection](https://www.google.com/search?q=./Insurance%2520Claims.postman_collection.json).
 
 ### Claim Ingestion
 
@@ -144,25 +153,25 @@ X-Correlation-Id: <unique-correlation-id>
 ### Orchestrator Lifecycle Queries
 
 * **Get Claim State:**
+
 ```http
 GET /api/v1/claims/{claimId}
 Host: localhost:8082
 
 ```
 
-
 * **Get Full Audit Trail:**
+
 ```http
 GET /api/v1/claims/{claimId}/audit
 Host: localhost:8082
 
 ```
 
-
-
 ### Manual Underwriting Decision
 
-* **Approve Claim:**
+* **Approve Claim (initiates `SETTLEMENT_PENDING` and publishes `SettlementRequested`):**
+
 ```http
 POST /api/v1/claims/{claimId}/approve
 Host: localhost:8082
@@ -174,8 +183,8 @@ Content-Type: application/json
 
 ```
 
-
 * **Reject Claim:**
+
 ```http
 POST /api/v1/claims/{claimId}/reject
 Host: localhost:8082
@@ -187,7 +196,31 @@ Content-Type: application/json
 
 ```
 
+### Settlement & Payout Queries
 
+* **Get Payout by Claim ID:**
+
+```http
+GET /api/v1/payouts/claims/{claimId}
+Host: localhost:8086
+
+```
+
+* **Get Payout by Payout ID:**
+
+```http
+GET /api/v1/payouts/{payoutId}
+Host: localhost:8086
+
+```
+
+* **Get Payout Audit Trail:**
+
+```http
+GET /api/v1/payouts/claims/{claimId}/audit
+Host: localhost:8086
+
+```
 
 ---
 
@@ -195,7 +228,7 @@ Content-Type: application/json
 
 ### Prerequisites
 
-* **Java 21 / 25** (Spring Boot services)
+* **Java 21 / 25** (Spring Boot services; Gradle / Groovy DSL for `settlement-payout-service`)
 * **Python 3.11+** (FastAPI services)
 * **Docker & Docker Compose** (RabbitMQ, Redis, MongoDB)
 
@@ -203,7 +236,10 @@ Content-Type: application/json
 
 ```bash
 # Spring Boot services (Ingestion, Orchestrator)
-./mvnw spring-boot:run
+./gradlew bootRun   # or ./mvnw spring-boot:run
+
+# Settlement Payout Service (Port 8086)
+./gradlew bootRun
 
 # Python microservices (Policy, Risk Scoring, Valuation)
 uvicorn app.main:app --host 0.0.0.0 --port <PORT> --reload

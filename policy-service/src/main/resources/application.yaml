@@ -1,3 +1,47 @@
+server:
+  port: ${SERVER_PORT:8083}
+
 spring:
   application:
-    name: policy
+    name: ${SPRING_APPLICATION_NAME}
+  config:
+    import: optional:classpath:application-local.yaml
+  mongodb:
+    uri: ${MONGODB_URI}
+  data:
+    mongodb:
+      auto-index-creation: ${MONGODB_AUTO_INDEX_CREATION}
+    redis:
+      host: ${REDIS_HOST}
+      port: ${REDIS_PORT}
+      timeout: ${REDIS_TIMEOUT}
+  rabbitmq:
+    host: ${RABBITMQ_HOST}
+    port: ${RABBITMQ_PORT}
+    username: ${RABBITMQ_USERNAME}
+    password: ${RABBITMQ_PASSWORD}
+    publisher-confirm-type: ${RABBITMQ_PUBLISHER_CONFIRM_TYPE}
+    publisher-returns: ${RABBITMQ_PUBLISHER_RETURNS}
+    template:
+      mandatory: ${RABBITMQ_TEMPLATE_MANDATORY}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+
+claims:
+  broker:
+    exchange: ${CLAIMS_BROKER_EXCHANGE}
+    dlq-exchange: ${CLAIMS_BROKER_DLQ_EXCHANGE}
+    claim-submitted-queue: ${CLAIMS_CLAIM_SUBMITTED_QUEUE}
+    claim-submitted-routing-key: ${CLAIMS_CLAIM_SUBMITTED_ROUTING_KEY}
+    policy-validated-routing-key: ${CLAIMS_POLICY_VALIDATED_ROUTING_KEY}
+    policy-validation-failed-routing-key: ${CLAIMS_POLICY_VALIDATION_FAILED_ROUTING_KEY}
+  dedup:
+    redis-ttl-hours: ${CLAIMS_DEDUP_REDIS_TTL_HOURS}
+  outbox:
+    poll-interval-ms: ${CLAIMS_OUTBOX_POLL_INTERVAL_MS}
+    batch-size: ${CLAIMS_OUTBOX_BATCH_SIZE}
+    max-retries: ${CLAIMS_OUTBOX_MAX_RETRIES}

@@ -110,7 +110,7 @@ $$\text{Recommended Reserve} = \text{Estimated Net Payout} \times \text{Risk Mul
 
 ## 5. API Reference
 
-For the complete runnable API reference, import the [Postman collection](https://www.google.com/search?q=./Insurance%2520Claims.postman_collection.json).
+For the complete runnable API reference, import the [Postman collection](<docs/Insurance Claims.postman_collection.json>).
 
 ### Claim Ingestion
 
@@ -231,6 +231,11 @@ Host: localhost:8086
 * **Java 21 / 25** (Spring Boot services; Gradle / Groovy DSL for `settlement-payout-service`)
 * **Python 3.11+** (FastAPI services)
 * **Docker & Docker Compose** (RabbitMQ, Redis, MongoDB)
+
+### Local infrastructure setup
+
+- [Set up Redis](docs/redis-setup.md)
+- [Set up RabbitMQ](docs/rabbitmq-setup.md)
 
 ### Running Services
 

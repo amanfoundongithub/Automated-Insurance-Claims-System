@@ -1,13 +1,13 @@
-package com.claims_engine.orchestrator;
+package com.claims_engine.policy;
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 
 @SpringBootApplication
-public class OrchestratorApplication {
+public class PolicyApplication {
 
 	public static void main(String[] args) {
-		SpringApplication.run(OrchestratorApplication.class, args);
+		SpringApplication.run(PolicyApplication.class, args);
 	}
 
 }

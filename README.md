@@ -237,19 +237,25 @@ Host: localhost:8086
 - [Set up Redis](docs/redis-setup.md)
 - [Set up RabbitMQ](docs/rabbitmq-setup.md)
 
-### Running Services
+### Running all services locally
+
+Start MongoDB, Redis, and RabbitMQ first, and configure each service's local settings. Install the Python dependencies if needed:
 
 ```bash
-# Spring Boot services (Ingestion, Orchestrator)
-./gradlew bootRun   # or ./mvnw spring-boot:run
+python3 -m venv risk-scoring-service/.venv
+risk-scoring-service/.venv/bin/python -m pip install -r risk-scoring-service/requirements.txt
 
-# Settlement Payout Service (Port 8086)
-./gradlew bootRun
-
-# Python microservices (Policy, Risk Scoring, Valuation)
-uvicorn app.main:app --host 0.0.0.0 --port <PORT> --reload
-
+python3 -m venv valuation-reserve-service/.venv
+valuation-reserve-service/.venv/bin/python -m pip install -r valuation-reserve-service/requirements.txt
 ```
+
+Then run all six services from the repository root:
+
+```bash
+./scripts/run-local-services.sh
+```
+
+The script runs the four Spring Boot services with `./gradlew --no-daemon bootRun` and starts the two FastAPI services with Uvicorn. It uses each Python service's `.venv` when present, or the interpreter specified by `PYTHON`. Press Ctrl+C to stop the services.
 
 ### Container images
 

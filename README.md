@@ -250,3 +250,20 @@ Host: localhost:8086
 uvicorn app.main:app --host 0.0.0.0 --port <PORT> --reload
 
 ```
+
+### Container images
+
+Each service has a Dockerfile and can be built locally from the repository root:
+
+```bash
+docker build -t claims-ingestion-service:local ./claims-ingestion-service
+docker build -t policy-service:local ./policy-service
+docker build -t settlement-payout-service:local ./settlement-payout-service
+docker build -t claims-orchestrator:local ./claims-orchestrator
+docker build -t risk-scoring-service:local ./risk-scoring-service
+docker build -t valuation-reserve-service:local ./valuation-reserve-service
+```
+
+The GitHub Actions workflow builds all six images on pull requests and publishes them to GHCR after a successful push to `main`. Images are tagged `latest` and with the full commit SHA. The image names follow `ghcr.io/amanfoundongithub/automated-insurance-claims-system-<service>`.
+
+Configure each container with the service's required MongoDB, Redis, and RabbitMQ environment variables at runtime. Local `.env` and `application-local` files are excluded from the build contexts. GHCR package visibility can be changed in the package settings if the images should be public.

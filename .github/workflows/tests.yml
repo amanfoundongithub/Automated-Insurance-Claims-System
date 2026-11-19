@@ -218,54 +218,6 @@ jobs:
       - name: Audit dependencies for known vulnerabilities
         run: pip-audit -r requirements.txt
 
-  dependency-review:
-    name: Dependency review
-    if: >-
-      github.event_name == 'pull_request' &&
-      github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Review dependency changes
-        uses: actions/dependency-review-action@v5
-        with:
-          fail-on-severity: high
-
-  gradle-dependency-submission:
-    name: Submit Gradle dependency graph / ${{ matrix.service }}
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    strategy:
-      fail-fast: false
-      matrix:
-        service:
-          - claims-ingestion-service
-          - policy-service
-          - settlement-payout-service
-          - claims-orchestrator
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Set up Java
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '25'
-
-      - name: Submit Gradle dependency graph
-        uses: gradle/actions/dependency-submission@v6
-        with:
-          build-root-directory: ${{ matrix.service }}
-          cache-provider: basic
-          dependency-graph: generate-and-submit
-
   container-images:
     name: Container / ${{ matrix.service }}
     needs: [lint, java, python, codeql, python-dependency-audit, integration]

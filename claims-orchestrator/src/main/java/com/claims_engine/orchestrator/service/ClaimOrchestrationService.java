@@ -11,11 +11,11 @@ import com.claims_engine.orchestrator.messaging.ClaimSubmittedPayload;
 import com.claims_engine.orchestrator.messaging.EventEnvelope;
 import com.claims_engine.orchestrator.messaging.PolicyValidatedPayload;
 import com.claims_engine.orchestrator.messaging.PolicyValidationFailedPayload;
-
+import com.claims_engine.orchestrator.messaging.RiskScoredPayload;
 import java.time.Duration;
 import java.time.Instant;
-import java.util.UUID;
 import java.util.List;
+import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -56,15 +56,13 @@ public class ClaimOrchestrationService {
         String claimId = payload.claimId();
         String redisKey = "orch:dedup:event:" + eventId;
 
-        if (Boolean.TRUE.equals(redisTemplate.hasKey(redisKey)) || processedEventRepository.existsById(eventId)) {
-            log.info("Duplicate event ignored: eventId={} claimId={}", eventId, claimId);
-            redisTemplate.opsForValue().set(redisKey, "1", Duration.ofHours(dedupTtlHours));
+        if (isDuplicate(redisKey, eventId, claimId)) {
             return;
         }
 
         ClaimLifecycleDocument lifecycle = lifecycleRepository.findById(claimId).orElse(null);
         ClaimLifecycleStatus previousStatus = lifecycle != null ? lifecycle.getStatus() : null;
-        ClaimLifecycleStatus nextStatus = ClaimLifecycleStatus.SUBMITTED;
+        ClaimLifecycleStatus targetStatus = ClaimLifecycleStatus.SUBMITTED;
 
         if (lifecycle == null) {
             lifecycle = new ClaimLifecycleDocument();
@@ -77,42 +75,25 @@ public class ClaimOrchestrationService {
             lifecycle.setClaimedAmount(payload.claimedAmount());
             lifecycle.setIncidentDetails(payload.incidentDetails());
             lifecycle.setAttachments(payload.attachments());
+            lifecycle.setCreatedAt(envelope.occurredAt() != null ? envelope.occurredAt() : Instant.now());
         }
 
-        lifecycle.setStatus(nextStatus);
+        boolean willAdvance = shouldAdvanceStatus(previousStatus, targetStatus);
+        ClaimLifecycleStatus newStatus = willAdvance ? targetStatus : previousStatus;
+
+        if (willAdvance) {
+            lifecycle.setStatus(targetStatus);
+            lifecycle.setLastEventType(envelope.eventType());
+        }
+
         lifecycle.setCorrelationId(envelope.correlationId());
-        lifecycle.setLastEventType(envelope.eventType());
 
-        ClaimAuditLogDocument auditEntry = new ClaimAuditLogDocument();
-        auditEntry.setAuditId("aud_" + UUID.randomUUID().toString().replace("-", ""));
-        auditEntry.setClaimId(claimId);
-        auditEntry.setEventId(eventId);
-        auditEntry.setEventType(envelope.eventType());
-        auditEntry.setPreviousStatus(previousStatus);
-        auditEntry.setNewStatus(nextStatus);
-        auditEntry.setCorrelationId(envelope.correlationId());
-        auditEntry.setCausationId(envelope.causationId());
-        auditEntry.setNotes("Claim ingested and registered in orchestrator");
-        auditEntry.setOccurredAt(envelope.occurredAt() != null ? envelope.occurredAt() : Instant.now());
+        String notes = willAdvance
+                ? "Claim ingested and registered in orchestrator"
+                : "ClaimSubmitted received out-of-order; metadata stored without regressing status";
 
-        ProcessedEventDocument processedEvent = new ProcessedEventDocument();
-        processedEvent.setEventId(eventId);
-        processedEvent.setClaimId(claimId);
-        processedEvent.setEventType(envelope.eventType());
-        processedEvent.setCorrelationId(envelope.correlationId());
-
-        try {
-            lifecycleRepository.save(lifecycle);
-            auditLogRepository.save(auditEntry);
-            processedEventRepository.save(processedEvent);
-            redisTemplate.opsForValue().set(redisKey, "1", Duration.ofHours(dedupTtlHours));
-
-            log.info("Orchestrated ClaimSubmitted: claimId={} eventId={} status={} correlationId={}",
-                    claimId, eventId, nextStatus, envelope.correlationId());
-        } catch (DuplicateKeyException dup) {
-            log.info("Concurrent duplicate eventId caught on insert: eventId={} claimId={}", eventId, claimId);
-            redisTemplate.opsForValue().set(redisKey, "1", Duration.ofHours(dedupTtlHours));
-        }
+        recordTransition(lifecycle, previousStatus, newStatus, envelope, notes);
+        markProcessed(redisKey, eventId, claimId, envelope);
     }
 
     @Transactional
@@ -128,23 +109,28 @@ public class ClaimOrchestrationService {
 
         ClaimLifecycleDocument lifecycle = getOrCreateLifecycle(claimId, payload.policyId(), payload.policyholderId());
         ClaimLifecycleStatus previousStatus = lifecycle.getStatus();
-        ClaimLifecycleStatus nextStatus = ClaimLifecycleStatus.POLICY_VALIDATED;
+        ClaimLifecycleStatus targetStatus = ClaimLifecycleStatus.POLICY_VALIDATED;
 
         lifecycle.setMaxCoverageAmount(payload.maxCoverageAmount());
         lifecycle.setDeductibleAmount(payload.deductibleAmount());
         lifecycle.setCoPayRatio(payload.coPayRatio());
         lifecycle.setPolicyValidationReasons(List.of());
-        lifecycle.setStatus(nextStatus);
-        lifecycle.setCorrelationId(envelope.correlationId());
-        lifecycle.setLastEventType(envelope.eventType());
 
-        recordTransition(
-                lifecycle,
-                previousStatus,
-                nextStatus,
-                envelope,
-                "Policy coverage validated for policyId=" + payload.policyId()
-        );
+        boolean willAdvance = shouldAdvanceStatus(previousStatus, targetStatus);
+        ClaimLifecycleStatus newStatus = willAdvance ? targetStatus : previousStatus;
+
+        if (willAdvance) {
+            lifecycle.setStatus(targetStatus);
+            lifecycle.setLastEventType(envelope.eventType());
+        }
+
+        lifecycle.setCorrelationId(envelope.correlationId());
+
+        String notes = willAdvance
+                ? "Policy coverage validated for policyId=" + payload.policyId()
+                : "PolicyValidated received out-of-order; terms recorded without regressing status (" + previousStatus + ")";
+
+        recordTransition(lifecycle, previousStatus, newStatus, envelope, notes);
         markProcessed(redisKey, eventId, claimId, envelope);
     }
 
@@ -161,22 +147,98 @@ public class ClaimOrchestrationService {
 
         ClaimLifecycleDocument lifecycle = getOrCreateLifecycle(claimId, payload.policyId(), payload.policyholderId());
         ClaimLifecycleStatus previousStatus = lifecycle.getStatus();
-        ClaimLifecycleStatus nextStatus = ClaimLifecycleStatus.POLICY_REJECTED;
+        ClaimLifecycleStatus targetStatus = ClaimLifecycleStatus.POLICY_REJECTED;
 
         List<String> reasons = payload.reasons() != null ? payload.reasons() : List.of("POLICY_VALIDATION_FAILED");
         lifecycle.setPolicyValidationReasons(reasons);
-        lifecycle.setStatus(nextStatus);
-        lifecycle.setCorrelationId(envelope.correlationId());
-        lifecycle.setLastEventType(envelope.eventType());
 
-        recordTransition(
-                lifecycle,
-                previousStatus,
-                nextStatus,
-                envelope,
-                "Policy validation failed: " + String.join("; ", reasons)
-        );
+        boolean willAdvance = shouldAdvanceStatus(previousStatus, targetStatus);
+        ClaimLifecycleStatus newStatus = willAdvance ? targetStatus : previousStatus;
+
+        if (willAdvance) {
+            lifecycle.setStatus(targetStatus);
+            lifecycle.setLastEventType(envelope.eventType());
+        }
+
+        lifecycle.setCorrelationId(envelope.correlationId());
+
+        String notes = willAdvance
+                ? "Policy validation failed: " + String.join("; ", reasons)
+                : "PolicyValidationFailed received out-of-order; reasons recorded without regressing status (" + previousStatus + ")";
+
+        recordTransition(lifecycle, previousStatus, newStatus, envelope, notes);
         markProcessed(redisKey, eventId, claimId, envelope);
+    }
+
+    @Transactional
+    public void handleRiskScored(EventEnvelope<RiskScoredPayload> envelope) {
+        UUID eventId = envelope.eventId();
+        RiskScoredPayload payload = envelope.payload();
+        String claimId = payload.claimId();
+        String redisKey = "orch:dedup:event:" + eventId;
+
+        if (isDuplicate(redisKey, eventId, claimId)) {
+            return;
+        }
+
+        ClaimLifecycleDocument lifecycle = getOrCreateLifecycle(claimId, payload.policyId(), payload.policyholderId());
+        ClaimLifecycleStatus previousStatus = lifecycle.getStatus();
+
+        ClaimLifecycleStatus targetStatus = payload.requiresManualReview()
+                ? ClaimLifecycleStatus.PENDING_MANUAL_REVIEW
+                : ClaimLifecycleStatus.RISK_SCORED;
+
+        List<String> flags = payload.riskFlags() != null ? payload.riskFlags() : List.of();
+        lifecycle.setRiskScore(payload.riskScore());
+        lifecycle.setRiskTier(payload.riskTier());
+        lifecycle.setRiskFlags(flags);
+        lifecycle.setRequiresManualReview(payload.requiresManualReview());
+
+        boolean willAdvance = shouldAdvanceStatus(previousStatus, targetStatus);
+        ClaimLifecycleStatus newStatus = willAdvance ? targetStatus : previousStatus;
+
+        if (willAdvance) {
+            lifecycle.setStatus(targetStatus);
+            lifecycle.setLastEventType(envelope.eventType());
+        }
+
+        lifecycle.setCorrelationId(envelope.correlationId());
+
+        String notes = String.format(
+                "Risk evaluated: score=%d, tier=%s, manualReview=%s, flags=%s%s",
+                payload.riskScore(),
+                payload.riskTier(),
+                payload.requiresManualReview(),
+                flags,
+                willAdvance ? "" : " (status maintained at " + previousStatus + ")"
+        );
+
+        recordTransition(lifecycle, previousStatus, newStatus, envelope, notes);
+        markProcessed(redisKey, eventId, claimId, envelope);
+    }
+
+    private boolean shouldAdvanceStatus(ClaimLifecycleStatus current, ClaimLifecycleStatus target) {
+        if (current == null) {
+            return true;
+        }
+        return statusRank(target) > statusRank(current);
+    }
+
+    private int statusRank(ClaimLifecycleStatus status) {
+        if (status == null) {
+            return 0;
+        }
+        return switch (status) {
+            case SUBMITTED -> 1;
+            case POLICY_VALIDATION_PENDING -> 2;
+            case POLICY_VALIDATED -> 3;
+            case POLICY_REJECTED -> 3;
+            case RISK_SCORING_PENDING -> 4;
+            case RISK_SCORED, PENDING_MANUAL_REVIEW -> 5;
+            case VALUATION_PENDING -> 6;
+            case SETTLEMENT_PENDING -> 7;
+            case APPROVED, REJECTED -> 8;
+        };
     }
 
     private boolean isDuplicate(String redisKey, UUID eventId, String claimId) {
@@ -194,6 +256,7 @@ public class ClaimOrchestrationService {
             doc.setClaimId(claimId);
             doc.setPolicyId(policyId);
             doc.setPolicyholderId(policyholderId);
+            doc.setCreatedAt(Instant.now());
             return doc;
         });
     }
@@ -201,21 +264,26 @@ public class ClaimOrchestrationService {
     private void recordTransition(
             ClaimLifecycleDocument lifecycle,
             ClaimLifecycleStatus previousStatus,
-            ClaimLifecycleStatus nextStatus,
+            ClaimLifecycleStatus newStatus,
             EventEnvelope<?> envelope,
             String notes
     ) {
+        if (lifecycle.getCreatedAt() == null) {
+            lifecycle.setCreatedAt(envelope.occurredAt() != null ? envelope.occurredAt() : Instant.now());
+        }
+
         ClaimAuditLogDocument auditEntry = new ClaimAuditLogDocument();
         auditEntry.setAuditId("aud_" + UUID.randomUUID().toString().replace("-", ""));
         auditEntry.setClaimId(lifecycle.getClaimId());
         auditEntry.setEventId(envelope.eventId());
         auditEntry.setEventType(envelope.eventType());
         auditEntry.setPreviousStatus(previousStatus);
-        auditEntry.setNewStatus(nextStatus);
+        auditEntry.setNewStatus(newStatus);
         auditEntry.setCorrelationId(envelope.correlationId());
         auditEntry.setCausationId(envelope.causationId());
         auditEntry.setNotes(notes);
         auditEntry.setOccurredAt(envelope.occurredAt() != null ? envelope.occurredAt() : Instant.now());
+        auditEntry.setCreatedAt(Instant.now());
 
         lifecycleRepository.save(lifecycle);
         auditLogRepository.save(auditEntry);
@@ -227,6 +295,7 @@ public class ClaimOrchestrationService {
         processedEvent.setClaimId(claimId);
         processedEvent.setEventType(envelope.eventType());
         processedEvent.setCorrelationId(envelope.correlationId());
+        processedEvent.setProcessedAt(Instant.now());
 
         try {
             processedEventRepository.save(processedEvent);

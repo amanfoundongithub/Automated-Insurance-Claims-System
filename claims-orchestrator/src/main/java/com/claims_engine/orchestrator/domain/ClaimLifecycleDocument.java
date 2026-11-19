@@ -35,6 +35,10 @@ public class ClaimLifecycleDocument {
     private Money deductibleAmount;
     private BigDecimal coPayRatio;
     private List<String> policyValidationReasons;
+    private Integer riskScore;
+    private String riskTier;
+    private List<String> riskFlags;
+    private Boolean requiresManualReview;
 
     @CreatedDate
     private Instant createdAt;
@@ -90,6 +94,20 @@ public class ClaimLifecycleDocument {
     public List<String> getPolicyValidationReasons() { return policyValidationReasons; }
     public void setPolicyValidationReasons(List<String> policyValidationReasons) {
         this.policyValidationReasons = policyValidationReasons;
+    }
+
+    public Integer getRiskScore() { return riskScore; }
+    public void setRiskScore(Integer riskScore) { this.riskScore = riskScore; }
+
+    public String getRiskTier() { return riskTier; }
+    public void setRiskTier(String riskTier) { this.riskTier = riskTier; }
+
+    public List<String> getRiskFlags() { return riskFlags; }
+    public void setRiskFlags(List<String> riskFlags) { this.riskFlags = riskFlags; }
+
+    public Boolean getRequiresManualReview() { return requiresManualReview; }
+    public void setRequiresManualReview(Boolean requiresManualReview) {
+        this.requiresManualReview = requiresManualReview;
     }
 
     public Instant getCreatedAt() { return createdAt; }

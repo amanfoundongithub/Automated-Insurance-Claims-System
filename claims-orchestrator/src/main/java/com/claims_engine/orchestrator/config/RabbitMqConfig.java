@@ -39,6 +39,12 @@ public class RabbitMqConfig {
     @Value("${claims.broker.policy-validation-failed-routing-key:policy.validation-failed}")
     private String policyValidationFailedRoutingKey;
 
+    @Value("${claims.broker.risk-scored-queue:q.orchestrator.risk-scored}")
+    private String riskScoredQueueName;
+
+    @Value("${claims.broker.risk-scored-routing-key:risk.scored}")
+    private String riskScoredRoutingKey;
+
     @Bean
     public TopicExchange claimsEventsExchange() {
         return ExchangeBuilder.topicExchange(exchangeName)
@@ -126,6 +132,24 @@ public class RabbitMqConfig {
     @Bean
     public MessageConverter jsonMessageConverter() {
         return new JacksonJsonMessageConverter();
+    }
+
+    @Bean
+    public Queue riskScoredQueue() {
+        return QueueBuilder.durable(riskScoredQueueName)
+                .withArgument("x-dead-letter-exchange", dlqExchangeName)
+                .withArgument("x-dead-letter-routing-key", "orchestrator.dlq")
+                .build();
+    }
+
+    @Bean
+    public Binding riskScoredBinding(
+            Queue riskScoredQueue,
+            TopicExchange claimsEventsExchange
+    ) {
+        return BindingBuilder.bind(riskScoredQueue)
+                .to(claimsEventsExchange)
+                .with(riskScoredRoutingKey);
     }
 
 }

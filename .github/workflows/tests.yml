@@ -60,6 +60,11 @@ jobs:
         working-directory: ${{ matrix.service }}
         run: python -m ruff check --select E4,E7,E9,F,I app tests
 
+      - name: Lint integration harness
+        if: matrix.service == 'risk-scoring-service'
+        working-directory: risk-scoring-service
+        run: python -m ruff check --select E4,E7,E9,F,I ../integration-tests
+
   java:
     name: Java tests / ${{ matrix.service }}
     needs: lint
@@ -142,3 +147,160 @@ jobs:
           path: |
             ${{ matrix.service }}/coverage.xml
             ${{ matrix.service }}/htmlcov/
+
+  integration:
+    name: End-to-end claim lifecycle
+    needs: [lint, java, python]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+      rabbitmq:
+        image: rabbitmq:3-management
+        env:
+          RABBITMQ_DEFAULT_USER: claims_ci
+          RABBITMQ_DEFAULT_PASS: claims_ci_password
+        ports:
+          - 5672:5672
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      MONGODB_URI: mongodb://127.0.0.1:27017/claims_integration?replicaSet=rs0&uuidRepresentation=standard
+      MONGODB_AUTO_INDEX_CREATION: 'true'
+      REDIS_HOST: 127.0.0.1
+      REDIS_PORT: '6379'
+      REDIS_TIMEOUT: 2s
+      RABBITMQ_HOST: 127.0.0.1
+      RABBITMQ_PORT: '5672'
+      RABBITMQ_USERNAME: claims_ci
+      RABBITMQ_PASSWORD: claims_ci_password
+      RABBITMQ_PUBLISHER_CONFIRM_TYPE: correlated
+      RABBITMQ_PUBLISHER_RETURNS: 'true'
+      RABBITMQ_TEMPLATE_MANDATORY: 'true'
+      RABBITMQ_LISTENER_SIMPLE_ACKNOWLEDGE_MODE: auto
+      RABBITMQ_LISTENER_SIMPLE_PREFETCH: '10'
+      RABBITMQ_LISTENER_SIMPLE_RETRY_ENABLED: 'true'
+      RABBITMQ_LISTENER_SIMPLE_RETRY_INITIAL_INTERVAL: 250ms
+      RABBITMQ_LISTENER_SIMPLE_RETRY_MAX_ATTEMPTS: '3'
+      RABBITMQ_LISTENER_SIMPLE_RETRY_MULTIPLIER: '2.0'
+      RABBITMQ_LISTENER_SIMPLE_DEFAULT_REQUEUE_REJECTED: 'false'
+      CLAIMS_BROKER_EXCHANGE: claims.events.topic
+      CLAIMS_BROKER_DLQ_EXCHANGE: claims.events.dlx
+      CLAIMS_CLAIM_SUBMITTED_QUEUE: q.policy.claim-submitted
+      CLAIMS_ORCHESTRATOR_CLAIM_SUBMITTED_QUEUE: q.orchestrator.claim-submitted
+      CLAIMS_CLAIM_SUBMITTED_ROUTING_KEY: claim.submitted
+      CLAIMS_POLICY_VALIDATED_QUEUE: q.orchestrator.policy-validated
+      CLAIMS_POLICY_VALIDATED_ROUTING_KEY: policy.validated
+      CLAIMS_POLICY_VALIDATION_FAILED_QUEUE: q.orchestrator.policy-validation-failed
+      CLAIMS_POLICY_VALIDATION_FAILED_ROUTING_KEY: policy.validation-failed
+      CLAIMS_RISK_SCORED_QUEUE: q.orchestrator.risk-scored
+      CLAIMS_RISK_SCORED_ROUTING_KEY: risk.scored
+      CLAIMS_VALUATION_COMPLETED_QUEUE: q.orchestrator.valuation-completed
+      CLAIMS_VALUATION_COMPLETED_ROUTING_KEY: valuation.completed
+      CLAIMS_SETTLEMENT_COMPLETED_QUEUE: q.orchestrator.settlement-completed
+      CLAIMS_SETTLEMENT_COMPLETED_ROUTING_KEY: settlement.completed
+      CLAIMS_SETTLEMENT_FAILED_QUEUE: q.orchestrator.settlement-failed
+      CLAIMS_SETTLEMENT_FAILED_ROUTING_KEY: settlement.failed
+      CLAIMS_DEDUP_REDIS_TTL_HOURS: '72'
+      CLAIMS_OUTBOX_POLL_INTERVAL_MS: '250'
+      CLAIMS_OUTBOX_BATCH_SIZE: '50'
+      CLAIMS_OUTBOX_MAX_RETRIES: '5'
+      SETTLEMENT_BROKER_EXCHANGE: claims.events.topic
+      SETTLEMENT_BROKER_DLQ_EXCHANGE: claims.events.dlx
+      SETTLEMENT_REQUESTED_QUEUE: q.settlement.settlement-requested
+      SETTLEMENT_REQUESTED_ROUTING_KEY: settlement.requested
+      SETTLEMENT_COMPLETED_ROUTING_KEY: settlement.completed
+      SETTLEMENT_FAILED_ROUTING_KEY: settlement.failed
+      SETTLEMENT_DEDUP_TTL_HOURS: '72'
+      SETTLEMENT_GATEWAY_MAX_ATTEMPTS: '1'
+      SETTLEMENT_GATEWAY_RETRY_BACKOFF: 1ms
+      SETTLEMENT_GATEWAY_SIMULATE_TRANSIENT_FAILURES: '0'
+      SETTLEMENT_GATEWAY_SIMULATE_PERMANENT_FAILURE: 'false'
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: gradle
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+
+      - name: Install Python service dependencies
+        run: >-
+          python -m pip install
+          -r risk-scoring-service/requirements.txt
+          -r valuation-reserve-service/requirements.txt
+
+      - name: Start MongoDB replica set
+        run: |
+          docker run --detach --name claims-mongodb --publish 27017:27017 mongo:7 \
+            mongod --replSet rs0 --bind_ip_all
+
+          ready=false
+          for attempt in $(seq 1 30); do
+            if docker exec claims-mongodb mongosh --quiet \
+              --eval 'quit(db.adminCommand({ ping: 1 }).ok ? 0 : 1)' >/dev/null 2>&1; then
+              ready=true
+              break
+            fi
+            sleep 2
+          done
+          if [ "$ready" != true ]; then
+            docker logs claims-mongodb
+            exit 1
+          fi
+
+          if ! docker exec claims-mongodb mongosh --quiet \
+            --eval 'rs.initiate({_id: "rs0", members: [{_id: 0, host: "127.0.0.1:27017"}]})'; then
+            docker logs claims-mongodb
+            exit 1
+          fi
+
+          ready=false
+          for attempt in $(seq 1 30); do
+            if docker exec claims-mongodb mongosh --quiet \
+              --eval 'quit(db.hello().isWritablePrimary ? 0 : 1)' >/dev/null 2>&1; then
+              ready=true
+              break
+            fi
+            sleep 2
+          done
+          if [ "$ready" != true ]; then
+            docker logs claims-mongodb
+            exit 1
+          fi
+
+      - name: Build Java services
+        run: |
+          for service in claims-ingestion-service policy-service claims-orchestrator settlement-payout-service; do
+            (cd "$service" && ./gradlew --no-daemon bootJar)
+          done
+
+      - name: Run end-to-end claim lifecycle test
+        run: python -m unittest discover -s integration-tests -v
+
+      - name: Upload service logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-service-logs
+          if-no-files-found: warn
+          path: integration-tests/logs/

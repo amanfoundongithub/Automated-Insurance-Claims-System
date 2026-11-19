@@ -1,3 +1,46 @@
+server:
+  port: ${SERVER_PORT:8082}
+
 spring:
   application:
-    name: orchestrator
+    name: ${SPRING_APPLICATION_NAME}
+  config:
+    import: optional:classpath:application-local.yaml
+  mongodb:
+    uri: ${MONGODB_URI}
+  data:
+    mongodb:
+      auto-index-creation: ${MONGODB_AUTO_INDEX_CREATION}
+    redis:
+      host: ${REDIS_HOST}
+      port: ${REDIS_PORT}
+      timeout: ${REDIS_TIMEOUT}
+  rabbitmq:
+    host: ${RABBITMQ_HOST}
+    port: ${RABBITMQ_PORT}
+    username: ${RABBITMQ_USERNAME}
+    password: ${RABBITMQ_PASSWORD}
+    listener:
+      simple:
+        acknowledge-mode: ${RABBITMQ_LISTENER_SIMPLE_ACKNOWLEDGE_MODE}
+        prefetch: ${RABBITMQ_LISTENER_SIMPLE_PREFETCH}
+        retry:
+          enabled: ${RABBITMQ_LISTENER_SIMPLE_RETRY_ENABLED}
+          initial-interval: ${RABBITMQ_LISTENER_SIMPLE_RETRY_INITIAL_INTERVAL}
+          max-attempts: ${RABBITMQ_LISTENER_SIMPLE_RETRY_MAX_ATTEMPTS}
+          multiplier: ${RABBITMQ_LISTENER_SIMPLE_RETRY_MULTIPLIER}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+
+claims:
+  broker:
+    exchange: ${CLAIMS_BROKER_EXCHANGE}
+    dlq-exchange: ${CLAIMS_BROKER_DLQ_EXCHANGE}
+    claim-submitted-queue: ${CLAIMS_CLAIM_SUBMITTED_QUEUE}
+    claim-submitted-routing-key: ${CLAIMS_CLAIM_SUBMITTED_ROUTING_KEY}
+  dedup:
+    redis-ttl-hours: ${CLAIMS_DEDUP_REDIS_TTL_HOURS}

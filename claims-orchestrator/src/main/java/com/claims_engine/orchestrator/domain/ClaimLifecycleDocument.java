@@ -45,6 +45,8 @@ public class ClaimLifecycleDocument {
     private Money estimatedNetPayout;
     private Money recommendedReserve;
     private String settlementReference;
+    private String payoutId;
+    private String providerReference;
     private Instant settledAt;
     private String decisionReason;
 
@@ -118,12 +120,6 @@ public class ClaimLifecycleDocument {
         this.requiresManualReview = requiresManualReview;
     }
 
-    public Instant getCreatedAt() { return createdAt; }
-    public void setCreatedAt(Instant createdAt) { this.createdAt = createdAt; }
-
-    public Instant getUpdatedAt() { return updatedAt; }
-    public void setUpdatedAt(Instant updatedAt) { this.updatedAt = updatedAt; }
-
     public Money getEligibleGrossAmount() { return eligibleGrossAmount; }
     public void setEligibleGrossAmount(Money eligibleGrossAmount) { this.eligibleGrossAmount = eligibleGrossAmount; }
 
@@ -142,9 +138,21 @@ public class ClaimLifecycleDocument {
     public String getSettlementReference() { return settlementReference; }
     public void setSettlementReference(String settlementReference) { this.settlementReference = settlementReference; }
 
+    public String getPayoutId() { return payoutId; }
+    public void setPayoutId(String payoutId) { this.payoutId = payoutId; }
+
+    public String getProviderReference() { return providerReference; }
+    public void setProviderReference(String providerReference) { this.providerReference = providerReference; }
+
     public Instant getSettledAt() { return settledAt; }
     public void setSettledAt(Instant settledAt) { this.settledAt = settledAt; }
 
     public String getDecisionReason() { return decisionReason; }
     public void setDecisionReason(String decisionReason) { this.decisionReason = decisionReason; }
+
+    public Instant getCreatedAt() { return createdAt; }
+    public void setCreatedAt(Instant createdAt) { this.createdAt = createdAt; }
+
+    public Instant getUpdatedAt() { return updatedAt; }
+    public void setUpdatedAt(Instant updatedAt) { this.updatedAt = updatedAt; }
 }

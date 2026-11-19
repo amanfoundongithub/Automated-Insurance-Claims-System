@@ -52,3 +52,7 @@ claims:
     valuation-completed-routing-key: ${CLAIMS_VALUATION_COMPLETED_ROUTING_KEY}
   dedup:
     redis-ttl-hours: ${CLAIMS_DEDUP_REDIS_TTL_HOURS}
+  settlement-completed-queue: ${CLAIMS_SETTLEMENT_COMPLETED_QUEUE}
+  settlement-completed-routing-key: ${CLAIMS_SETTLEMENT_COMPLETED_ROUTING_KEY}
+  settlement-failed-queue: ${CLAIMS_SETTLEMENT_FAILED_QUEUE}
+  settlement-failed-routing-key: ${CLAIMS_SETTLEMENT_FAILED_ROUTING_KEY}

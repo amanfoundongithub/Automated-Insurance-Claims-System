@@ -205,6 +205,108 @@ class ClaimOrchestrationServiceTest {
         assertThrows(IllegalArgumentException.class, () -> service.approveClaim("missing", null));
     }
 
+    @Test
+    void valuationRequiringManualReviewDoesNotStartAutomaticSettlement() {
+        when(lifecycleRepository.findById("claim-1")).thenReturn(Optional.empty());
+
+        service.handleValuationCompleted(
+                envelope("ValuationCompleted", valuation(new BigDecimal("250.00"), true)));
+
+        var captor = org.mockito.ArgumentCaptor.forClass(ClaimLifecycleDocument.class);
+        verify(lifecycleRepository).save(captor.capture());
+        assertEquals(ClaimLifecycleStatus.PENDING_MANUAL_REVIEW, captor.getValue().getStatus());
+        assertEquals(Boolean.TRUE, captor.getValue().getRequiresManualReview());
+        verify(publisher, never()).publish(any(), any(), any());
+    }
+
+    @Test
+    void settlementCompletionForUnknownClaimIsMarkedProcessedWithoutAudit() {
+        when(lifecycleRepository.findById("claim-1")).thenReturn(Optional.empty());
+        SettlementCompletedPayload payload = new SettlementCompletedPayload(
+                "claim-1", "pol-1", "holder-1", "stl-1", "pay-1", "provider-1",
+                new BigDecimal("250.00"), "USD", Instant.now());
+
+        service.handleSettlementCompleted(envelope("SettlementCompleted", payload));
+
+        verify(processedRepository).save(any(ProcessedEventDocument.class));
+        verify(auditRepository, never()).save(any());
+        verify(lifecycleRepository, never()).save(any());
+    }
+
+    @Test
+    void approvalUsesDefaultReasonAndDoesNotPublishWithoutPayoutAmount() {
+        ClaimLifecycleDocument lifecycle = lifecycle("claim-1", ClaimLifecycleStatus.PENDING_MANUAL_REVIEW);
+        when(lifecycleRepository.findById("claim-1")).thenReturn(Optional.of(lifecycle));
+
+        ClaimLifecycleDocument approved = service.approveClaim("claim-1", "  ");
+
+        assertEquals(ClaimLifecycleStatus.SETTLEMENT_PENDING, approved.getStatus());
+        org.junit.jupiter.api.Assertions.assertTrue(
+                approved.getDecisionReason().startsWith("Approved after manual review; settlementRef="));
+        verify(publisher, never()).publish(any(), any(), any());
+    }
+
+    @Test
+    void claimSubmittedDoesNotRegressAnAlreadyApprovedLifecycle() {
+        ClaimLifecycleDocument lifecycle = lifecycle("claim-1", ClaimLifecycleStatus.APPROVED);
+        when(lifecycleRepository.findById("claim-1")).thenReturn(Optional.of(lifecycle));
+        ClaimSubmittedPayload payload = new ClaimSubmittedPayload(
+                "claim-1", "pol-1", "holder-1", "AUTO", Instant.now(), Instant.now(),
+                new Money(new BigDecimal("100.00"), "USD"), Map.of(), List.of());
+
+        service.handleClaimSubmitted(envelope("ClaimSubmitted", payload));
+
+        assertEquals(ClaimLifecycleStatus.APPROVED, lifecycle.getStatus());
+        assertEquals("corr-1", lifecycle.getCorrelationId());
+        verify(auditRepository).save(any(ClaimAuditLogDocument.class));
+    }
+
+    @Test
+    void settlementCompletionWithoutTimestampUsesCurrentTime() {
+        ClaimLifecycleDocument lifecycle = lifecycle("claim-1", ClaimLifecycleStatus.SETTLEMENT_PENDING);
+        when(lifecycleRepository.findById("claim-1")).thenReturn(Optional.of(lifecycle));
+        SettlementCompletedPayload payload = new SettlementCompletedPayload(
+                "claim-1", "pol-1", "holder-1", "stl-1", "pay-1", "provider-1",
+                new BigDecimal("250.00"), "USD", null);
+        Instant before = Instant.now();
+
+        service.handleSettlementCompleted(envelope("SettlementCompleted", payload));
+
+        org.junit.jupiter.api.Assertions.assertNotNull(lifecycle.getSettledAt());
+        org.junit.jupiter.api.Assertions.assertFalse(lifecycle.getSettledAt().isBefore(before));
+        assertEquals(ClaimLifecycleStatus.APPROVED, lifecycle.getStatus());
+    }
+
+    @Test
+    void ignoresSettlementFailureAfterClaimReachedRejectedTerminalState() {
+        ClaimLifecycleDocument lifecycle = lifecycle("claim-1", ClaimLifecycleStatus.REJECTED);
+        when(lifecycleRepository.findById("claim-1")).thenReturn(Optional.of(lifecycle));
+        SettlementFailedPayload payload = new SettlementFailedPayload(
+                "claim-1", "pol-1", "holder-1", "stl-1", "pay-1",
+                "provider error", true, Instant.now());
+
+        service.handleSettlementFailed(envelope("SettlementFailed", payload));
+
+        assertEquals(ClaimLifecycleStatus.REJECTED, lifecycle.getStatus());
+        verify(auditRepository, never()).save(any());
+        verify(processedRepository).save(any(ProcessedEventDocument.class));
+    }
+
+    @Test
+    void approvingFinalizedClaimThrowsIllegalState() {
+        ClaimLifecycleDocument lifecycle = lifecycle("claim-1", ClaimLifecycleStatus.APPROVED);
+        when(lifecycleRepository.findById("claim-1")).thenReturn(Optional.of(lifecycle));
+
+        assertThrows(IllegalStateException.class, () -> service.approveClaim("claim-1", "approve again"));
+    }
+
+    @Test
+    void rejectingUnknownClaimThrowsIllegalArgument() {
+        when(lifecycleRepository.findById("missing")).thenReturn(Optional.empty());
+
+        assertThrows(IllegalArgumentException.class, () -> service.rejectClaim("missing", "reject"));
+    }
+
     private static ClaimLifecycleDocument lifecycle(String claimId, ClaimLifecycleStatus status) {
         ClaimLifecycleDocument lifecycle = new ClaimLifecycleDocument();
         lifecycle.setClaimId(claimId);

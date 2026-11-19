@@ -9,7 +9,7 @@ os.environ.setdefault("MONGODB_URI", "mongodb://localhost/test")
 from app import consumer
 
 
-def event_body(event_id: str = "event-1") -> bytes:
+def event_body(event_id: str = "event-1", requires_manual_review: bool = False) -> bytes:
     return json.dumps(
         {
             "eventId": event_id,
@@ -21,6 +21,7 @@ def event_body(event_id: str = "event-1") -> bytes:
                 "policyholderId": "holder-1",
                 "riskScore": 45,
                 "riskTier": "MEDIUM",
+                "requiresManualReview": requires_manual_review,
             },
         }
     ).encode()
@@ -101,6 +102,27 @@ class ProcessRiskScoredTests(unittest.IsolatedAsyncioTestCase):
         self.claims.find_one.assert_not_awaited()
         self.valuations.replace_one.assert_not_awaited()
         self.outbox.insert_one.assert_not_awaited()
+
+    async def test_preserves_manual_review_decision_in_valuation_and_event(self) -> None:
+        await consumer.process_risk_scored(event_body(requires_manual_review=True))
+
+        valuation_doc = self.valuations.replace_one.await_args.args[1]
+        outbox_doc = self.outbox.insert_one.await_args.args[0]
+        self.assertTrue(valuation_doc["requiresManualReview"])
+        self.assertTrue(outbox_doc["payload"]["requiresManualReview"])
+
+    async def test_missing_policy_caps_eligible_amount_at_claimed_amount(self) -> None:
+        self.claims.find_one.return_value = {
+            "claimedAmount": {"amount": "175.00", "currency": "EUR"}
+        }
+        self.policies.find_one.return_value = None
+
+        await consumer.process_risk_scored(event_body())
+
+        valuation_doc = self.valuations.replace_one.await_args.args[1]
+        self.assertEqual("175.00", valuation_doc["maxCoverageAmount"])
+        self.assertEqual("175.00", valuation_doc["eligibleGrossAmount"])
+        self.assertEqual("EUR", valuation_doc["currency"])
 
 
 if __name__ == "__main__":

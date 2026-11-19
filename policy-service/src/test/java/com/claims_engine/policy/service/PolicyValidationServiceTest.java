@@ -149,6 +149,106 @@ class PolicyValidationServiceTest {
         verify(redisValues).set("policy:dedup:event:" + eventId, "1", Duration.ofHours(72));
     }
 
+    @Test
+    void rejectsIncidentAfterExpiryButAcceptsIncidentOnEffectiveBoundary() {
+        PolicyDocument policy = activePolicy();
+        when(policyRepository.findById("pol-1")).thenReturn(Optional.of(policy));
+
+        service.validateClaim(envelope(
+                UUID.randomUUID(), payload("AUTO", "USD", "250.00", Instant.parse("2026-01-01T00:00:00Z"))));
+        service.validateClaim(envelope(
+                UUID.randomUUID(), payload("AUTO", "USD", "250.00", policy.getEffectiveFrom())));
+
+        var captor = org.mockito.ArgumentCaptor.forClass(OutboxEventDocument.class);
+        verify(outboxRepository, org.mockito.Mockito.times(2)).save(captor.capture());
+        assertEquals("PolicyValidationFailed", captor.getAllValues().get(0).getEventType());
+        assertEquals(List.of("AFTER_EXPIRY_DATE: Incident occurred after policy effectiveTo"),
+                captor.getAllValues().get(0).getPayload().get("reasons"));
+        assertEquals("PolicyValidated", captor.getAllValues().get(1).getEventType());
+    }
+
+    @Test
+    void skipsEventAlreadyPresentInMongoAndRefreshesRedisDeduplication() {
+        UUID eventId = UUID.randomUUID();
+        when(processedRepository.existsById(eventId)).thenReturn(true);
+
+        service.validateClaim(envelope(eventId, payload("AUTO", "USD", "250.00", null)));
+
+        verify(policyRepository, never()).findById(any());
+        verify(processedRepository, never()).save(any());
+        verify(outboxRepository, never()).save(any());
+        verify(redisValues).set("policy:dedup:event:" + eventId, "1", Duration.ofHours(72));
+    }
+
+    @Test
+    void rejectsIncidentAfterPolicyExpiry() {
+        when(policyRepository.findById("pol-1")).thenReturn(Optional.of(activePolicy()));
+
+        service.validateClaim(envelope(
+                UUID.randomUUID(), payload("AUTO", "USD", "250.00", Instant.parse("2026-01-01T00:00:00Z"))));
+
+        var captor = org.mockito.ArgumentCaptor.forClass(OutboxEventDocument.class);
+        verify(outboxRepository).save(captor.capture());
+        assertEquals(List.of("AFTER_EXPIRY_DATE: Incident occurred after policy effectiveTo"),
+                captor.getValue().getPayload().get("reasons"));
+    }
+
+    @Test
+    void rejectsClaimWhenEligibleTypesAreUnspecified() {
+        PolicyDocument policy = activePolicy();
+        policy.setEligibleClaimTypes(null);
+        when(policyRepository.findById("pol-1")).thenReturn(Optional.of(policy));
+
+        service.validateClaim(envelope(
+                UUID.randomUUID(), payload("AUTO", "USD", "250.00", Instant.parse("2025-05-01T00:00:00Z"))));
+
+        var captor = org.mockito.ArgumentCaptor.forClass(OutboxEventDocument.class);
+        verify(outboxRepository).save(captor.capture());
+        assertEquals("PolicyValidationFailed", captor.getValue().getEventType());
+        assertEquals(List.of("CLAIM_TYPE_NOT_COVERED: Claim type AUTO is not eligible"),
+                captor.getValue().getPayload().get("reasons"));
+    }
+
+    @Test
+    void acceptsIncidentOnPolicyExpiryBoundaryAndAmountEqualToCoverage() {
+        PolicyDocument policy = activePolicy();
+        when(policyRepository.findById("pol-1")).thenReturn(Optional.of(policy));
+
+        service.validateClaim(envelope(
+                UUID.randomUUID(),
+                payload("AUTO", "USD", "500.00", policy.getEffectiveTo())));
+
+        var captor = org.mockito.ArgumentCaptor.forClass(OutboxEventDocument.class);
+        verify(outboxRepository).save(captor.capture());
+        assertEquals("PolicyValidated", captor.getValue().getEventType());
+        assertEquals("policy.validated", captor.getValue().getRoutingKey());
+    }
+
+    @Test
+    void acceptsCoveredClaimWhenClaimAmountIsAbsent() {
+        when(policyRepository.findById("pol-1")).thenReturn(Optional.of(activePolicy()));
+        ClaimSubmittedPayload payload = new ClaimSubmittedPayload(
+                "claim-1", "pol-1", "holder-1", "AUTO", null, Instant.now(),
+                null, Map.of(), List.of());
+
+        service.validateClaim(envelope(UUID.randomUUID(), payload));
+
+        var captor = org.mockito.ArgumentCaptor.forClass(OutboxEventDocument.class);
+        verify(outboxRepository).save(captor.capture());
+        assertEquals("PolicyValidated", captor.getValue().getEventType());
+    }
+
+    @Test
+    void refreshesDedupKeyAfterPreviouslyProcessedEventIsFoundInMongo() {
+        UUID eventId = UUID.randomUUID();
+        when(processedRepository.existsById(eventId)).thenReturn(true);
+
+        service.validateClaim(envelope(eventId, payload("AUTO", "USD", "250.00", null)));
+
+        verify(outboxRepository, never()).save(any());
+        verify(redisValues).set("policy:dedup:event:" + eventId, "1", Duration.ofHours(72));
+    }
+
     private static PolicyDocument activePolicy() {
         PolicyDocument policy = new PolicyDocument();
         policy.setPolicyId("pol-1");

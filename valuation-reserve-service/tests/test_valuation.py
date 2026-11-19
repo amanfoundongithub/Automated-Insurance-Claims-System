@@ -111,6 +111,67 @@ class CalculateValuationTests(unittest.TestCase):
 
         self.assertEqual("GBP", result.currency)
 
+    def test_missing_coverage_defaults_to_claimed_amount(self) -> None:
+        result = calculate_valuation(
+            {"claimedAmount": {"amount": "125.50", "currency": "CAD"}},
+            {},
+            "LOW",
+        )
+
+        self.assertEqual(Decimal("125.50"), result.maxCoverageAmount)
+        self.assertEqual(Decimal("125.50"), result.eligibleGrossAmount)
+        self.assertEqual("CAD", result.currency)
+
+    def test_missing_copay_ratio_defaults_to_zero(self) -> None:
+        result = calculate_valuation(
+            {"claimedAmount": {"amount": "250", "currency": "USD"}},
+            {"deductibleAmount": {"amount": "25", "currency": "USD"}},
+            "LOW",
+        )
+
+        self.assertEqual(Decimal("0.00"), result.coPayRatio)
+        self.assertEqual(Decimal("0.00"), result.coPayDeductionAmount)
+        self.assertEqual(Decimal("225.00"), result.estimatedNetPayout)
+
+    def test_missing_currencies_default_to_inr(self) -> None:
+        result = calculate_valuation(
+            {"claimedAmount": {"amount": "100"}},
+            {"maxCoverageAmount": {"amount": "150"}},
+            "LOW",
+        )
+
+        self.assertEqual("INR", result.currency)
+        self.assertEqual(Decimal("100.00"), result.estimatedNetPayout)
+
+    def test_none_risk_tier_uses_low_reserve_factor(self) -> None:
+        result = calculate_valuation(
+            {"claimedAmount": {"amount": "80", "currency": "USD"}},
+            {},
+            None,
+        )
+
+        self.assertEqual(Decimal("80.00"), result.recommendedReserve)
+
+    def test_policy_currency_is_used_when_claim_document_is_missing(self) -> None:
+        result = calculate_valuation(
+            None,
+            {"maxCoverageAmount": {"amount": "500", "currency": "AUD"}},
+            "LOW",
+        )
+
+        self.assertEqual("AUD", result.currency)
+        self.assertEqual(Decimal("0.00"), result.estimatedNetPayout)
+
+    def test_deductible_defaults_to_zero_when_only_coverage_is_present(self) -> None:
+        result = calculate_valuation(
+            {"claimedAmount": {"amount": "90", "currency": "USD"}},
+            {"maxCoverageAmount": {"amount": "100", "currency": "USD"}},
+            "LOW",
+        )
+
+        self.assertEqual(Decimal("0.00"), result.deductibleAmount)
+        self.assertEqual(Decimal("90.00"), result.estimatedNetPayout)
+
     def test_money_rounding_uses_half_up(self) -> None:
         result = calculate_valuation(
             {"claimedAmount": {"amount": "10.005", "currency": "USD"}},

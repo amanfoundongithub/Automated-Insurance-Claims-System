@@ -3,6 +3,7 @@ package com.claims_engine.ingestion.service;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -131,6 +132,119 @@ class ClaimIngestionServiceTest {
         assertNull(response.eventId());
         verify(outboxRepository, never()).save(any());
         verify(redisValues).set("idem:claim:key-1", "clm_winner", Duration.ofHours(24));
+    }
+
+    @Test
+    void repairsStaleRedisPointerFromDatabaseIdempotencyRecord() {
+        ClaimDocument existing = existingClaim("clm_recovered", "corr-existing");
+        when(redisValues.get("idem:claim:key-1")).thenReturn("clm_stale");
+        when(claimRepository.findById("clm_stale")).thenReturn(Optional.empty());
+        when(claimRepository.findByIdempotencyKey("key-1")).thenReturn(Optional.of(existing));
+
+        ClaimResponse response = service.submitClaim(request(null, null), "key-1", "corr-new");
+
+        assertEquals("clm_recovered", response.claimId());
+        assertNull(response.eventId());
+        verify(redisValues).set("idem:claim:key-1", "clm_recovered", Duration.ofHours(24));
+        verify(claimRepository, never()).save(any());
+        verify(outboxRepository, never()).save(any());
+    }
+
+    @Test
+    void rethrowsDuplicateKeyWhenWinningRecordCannotBeRecovered() {
+        when(redisValues.get("idem:claim:key-1")).thenReturn(null);
+        when(claimRepository.findByIdempotencyKey("key-1"))
+                .thenReturn(Optional.empty(), Optional.empty());
+        when(claimRepository.save(any(ClaimDocument.class)))
+                .thenThrow(new DuplicateKeyException("duplicate idempotency key"));
+
+        assertThrows(
+                DuplicateKeyException.class,
+                () -> service.submitClaim(request(null, null), "key-1", "corr-1"));
+
+        verify(outboxRepository, never()).save(any());
+    }
+
+    @Test
+    void createsNewClaimWhenRedisPointerIsStaleAndDatabaseHasNoRecord() {
+        when(redisValues.get("idem:claim:key-1")).thenReturn("clm_stale");
+        when(claimRepository.findById("clm_stale")).thenReturn(Optional.empty());
+        when(claimRepository.findByIdempotencyKey("key-1")).thenReturn(Optional.empty());
+        when(claimRepository.save(any(ClaimDocument.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+
+        ClaimResponse response = service.submitClaim(request(null, null), "key-1", "corr-1");
+
+        assertNotNull(response.eventId());
+        org.junit.jupiter.api.Assertions.assertNotEquals("clm_stale", response.claimId());
+        verify(outboxRepository).save(any(OutboxEventDocument.class));
+    }
+
+    @Test
+    void writesConfiguredEventMetadataAndClaimDetailsToOutbox() {
+        Map<String, Object> details = Map.of("location", "north", "severity", "major");
+        when(redisValues.get("idem:claim:key-1")).thenReturn(null);
+        when(claimRepository.findByIdempotencyKey("key-1")).thenReturn(Optional.empty());
+        when(claimRepository.save(any(ClaimDocument.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+
+        service.submitClaim(request(details, null), "key-1", "corr-1");
+
+        var captor = org.mockito.ArgumentCaptor.forClass(OutboxEventDocument.class);
+        verify(outboxRepository).save(captor.capture());
+        OutboxEventDocument event = captor.getValue();
+        assertEquals("claims", event.getExchange());
+        assertEquals("claim.submitted", event.getRoutingKey());
+        assertEquals("ClaimSubmitted", event.getEventType());
+        assertEquals("PENDING", event.getStatus().name());
+        assertEquals(details, event.getEnvelope().payload().incidentDetails());
+        assertEquals("ingestion", event.getEnvelope().producer());
+        assertEquals("corr-1", event.getEnvelope().correlationId());
+    }
+
+    @Test
+    void propagatesClaimPersistenceFailureWithoutCreatingOutboxOrCacheEntry() {
+        when(redisValues.get("idem:claim:key-1")).thenReturn(null);
+        when(claimRepository.findByIdempotencyKey("key-1")).thenReturn(Optional.empty());
+        when(claimRepository.save(any(ClaimDocument.class)))
+                .thenThrow(new IllegalStateException("database unavailable"));
+
+        assertThrows(
+                IllegalStateException.class,
+                () -> service.submitClaim(request(null, null), "key-1", "corr-1"));
+
+        verify(outboxRepository, never()).save(any());
+        verify(redisValues, never()).set(any(), any(), any(java.time.Duration.class));
+    }
+
+    @Test
+    void propagatesOutboxPersistenceFailureWithoutCachingClaim() {
+        when(redisValues.get("idem:claim:key-1")).thenReturn(null);
+        when(claimRepository.findByIdempotencyKey("key-1")).thenReturn(Optional.empty());
+        when(claimRepository.save(any(ClaimDocument.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+        when(outboxRepository.save(any(OutboxEventDocument.class)))
+                .thenThrow(new IllegalStateException("outbox unavailable"));
+
+        assertThrows(
+                IllegalStateException.class,
+                () -> service.submitClaim(request(null, null), "key-1", "corr-1"));
+
+        verify(redisValues, never()).set(any(), any(), any(java.time.Duration.class));
+    }
+
+    @Test
+    void distinctIdempotencyKeysCreateDistinctClaims() {
+        when(claimRepository.findByIdempotencyKey(any())).thenReturn(Optional.empty());
+        when(claimRepository.save(any(ClaimDocument.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+
+        ClaimResponse first = service.submitClaim(request(null, null), "key-1", "corr-1");
+        ClaimResponse second = service.submitClaim(request(null, null), "key-2", "corr-2");
+
+        org.junit.jupiter.api.Assertions.assertNotEquals(first.claimId(), second.claimId());
+        org.junit.jupiter.api.Assertions.assertNotEquals(first.eventId(), second.eventId());
+        verify(outboxRepository, org.mockito.Mockito.times(2)).save(any(OutboxEventDocument.class));
     }
 
     private static SubmitClaimRequest request(Map<String, Object> details, java.util.List<com.claims_engine.ingestion.domain.AttachmentItem> attachments) {

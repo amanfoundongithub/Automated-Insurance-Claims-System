@@ -1,6 +1,7 @@
 package com.claims_engine.settlement.service;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -171,6 +172,118 @@ class SettlementPayoutServiceTest {
         verify(gatewayClient).executePayout(payoutCaptor.capture());
         assertEquals(3, payoutCaptor.getValue().getAttemptCount());
         assertEquals(PayoutStatus.SETTLED, payoutCaptor.getValue().getStatus());
+    }
+
+    @Test
+    void fallsBackToMongoWhenRedisDeduplicationCheckFails() {
+        UUID eventId = UUID.randomUUID();
+        when(redisTemplate.hasKey("settlement:dedup:event:" + eventId))
+                .thenThrow(new IllegalStateException("Redis unavailable"));
+        when(processedRepository.existsById(eventId)).thenReturn(true);
+
+        service.handleSettlementRequested(envelope(eventId, payload("20.00", "USD")));
+
+        verify(processedRepository).existsById(eventId);
+        verify(payoutRepository, never()).findByClaimId(any());
+        verify(gatewayClient, never()).executePayout(any());
+    }
+
+    @Test
+    void completesPayoutEvenIfRedisDeduplicationWriteFails() {
+        when(payoutRepository.findByClaimId("claim-1")).thenReturn(Optional.empty());
+        when(gatewayClient.executePayout(any(PayoutDocument.class))).thenReturn(
+                new GatewayOutcome.Settled("provider-3", new BigDecimal("20.00"), "USD", Instant.now()));
+        org.mockito.Mockito.doThrow(new IllegalStateException("Redis unavailable"))
+                .when(redisValues)
+                .set(any(String.class), any(String.class), any(java.time.Duration.class));
+
+        service.handleSettlementRequested(envelope(UUID.randomUUID(), payload("20.00", "USD")));
+
+        verify(eventPublisher).publishSettlementCompleted(any(), any(), any());
+        verify(processedRepository).save(any(ProcessedEventDocument.class));
+    }
+
+    @Test
+    void continuesPublishingWhenProcessedEventInsertIsConcurrentDuplicate() {
+        when(payoutRepository.findByClaimId("claim-1")).thenReturn(Optional.empty());
+        when(gatewayClient.executePayout(any(PayoutDocument.class))).thenReturn(
+                new GatewayOutcome.Settled("provider-4", new BigDecimal("20.00"), "USD", Instant.now()));
+        when(processedRepository.save(any(ProcessedEventDocument.class)))
+                .thenThrow(new org.springframework.dao.DuplicateKeyException("duplicate event"));
+
+        service.handleSettlementRequested(envelope(UUID.randomUUID(), payload("20.00", "USD")));
+
+        verify(eventPublisher).publishSettlementCompleted(any(), any(), any());
+        verify(redisValues).set(any(String.class), any(String.class), any(java.time.Duration.class));
+    }
+
+    @Test
+    void normalizesMissingPayoutMoneyToZeroAndNullCurrencyForGateway() {
+        when(payoutRepository.findByClaimId("claim-1")).thenReturn(Optional.empty());
+        when(gatewayClient.executePayout(any(PayoutDocument.class))).thenAnswer(invocation -> {
+            PayoutDocument payout = invocation.getArgument(0);
+            assertEquals(new BigDecimal("0.00"), payout.getAmount());
+            assertNull(payout.getCurrency());
+            return new GatewayOutcome.Failed("missing amount", false, Instant.now());
+        });
+        SettlementRequestedPayload noAmount = new SettlementRequestedPayload(
+                "claim-1", "pol-1", "holder-1", "stl-1", null, null, "LOW", Instant.now());
+
+        service.handleSettlementRequested(envelope(UUID.randomUUID(), noAmount));
+
+        verify(gatewayClient).executePayout(any(PayoutDocument.class));
+        verify(eventPublisher).publishSettlementFailed(any(), any(), any());
+    }
+
+    @Test
+    void defaultsMissingCausationIdToIncomingEventId() {
+        UUID eventId = UUID.randomUUID();
+        when(payoutRepository.findByClaimId("claim-1")).thenReturn(Optional.empty());
+        when(gatewayClient.executePayout(any(PayoutDocument.class))).thenReturn(
+                new GatewayOutcome.Failed("declined", false, Instant.now()));
+        EventEnvelope<SettlementRequestedPayload> noCausation = new EventEnvelope<>(
+                eventId, "SettlementRequested", "1.0", Instant.now(), "orchestrator",
+                "corr-1", null, "claim-1", payload("20.00", "USD"));
+
+        service.handleSettlementRequested(noCausation);
+
+        var captor = org.mockito.ArgumentCaptor.forClass(PayoutDocument.class);
+        verify(gatewayClient).executePayout(captor.capture());
+        assertEquals(eventId.toString(), captor.getValue().getLastCausationId());
+    }
+
+    @Test
+    void propagatesPayoutRepositoryFailureWithoutCallingGateway() {
+        when(payoutRepository.findByClaimId("claim-1")).thenReturn(Optional.empty());
+        when(payoutRepository.save(any(PayoutDocument.class)))
+                .thenThrow(new IllegalStateException("database unavailable"));
+
+        org.junit.jupiter.api.Assertions.assertThrows(
+                IllegalStateException.class,
+                () -> service.handleSettlementRequested(envelope(
+                        UUID.randomUUID(), payload("20.00", "USD"))));
+
+        verify(gatewayClient, never()).executePayout(any());
+        verify(eventPublisher, never()).publishSettlementCompleted(any(), any(), any());
+    }
+
+    @Test
+    void updatesExistingFailedPayoutWithNewAttemptCorrelation() {
+        PayoutDocument payout = PayoutDocument.builder()
+                .payoutId("pay-1").claimId("claim-1").status(PayoutStatus.FAILED)
+                .attemptCount(1).build();
+        when(payoutRepository.findByClaimId("claim-1")).thenReturn(Optional.of(payout));
+        when(gatewayClient.executePayout(any(PayoutDocument.class))).thenReturn(
+                new GatewayOutcome.Failed("still unavailable", false, Instant.now()));
+
+        service.handleSettlementRequested(envelope(UUID.randomUUID(), payload("35.00", "CAD")));
+
+        var captor = org.mockito.ArgumentCaptor.forClass(PayoutDocument.class);
+        verify(gatewayClient).executePayout(captor.capture());
+        assertEquals(2, captor.getValue().getAttemptCount());
+        assertEquals("corr-1", captor.getValue().getLastCorrelationId());
+        assertEquals(new BigDecimal("35.00"), captor.getValue().getAmount());
+        assertEquals("CAD", captor.getValue().getCurrency());
     }
 
     private static SettlementRequestedPayload payload(String amount, String currency) {

@@ -3,6 +3,7 @@ import os
 import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
+from bson.decimal128 import Decimal128
 
 os.environ.setdefault("MONGODB_URI", "mongodb://localhost/test")
 
@@ -97,6 +98,81 @@ class ProcessPolicyValidatedTests(unittest.IsolatedAsyncioTestCase):
         self.scores.replace_one.assert_not_awaited()
         self.outbox.insert_one.assert_not_awaited()
         self.redis.set.assert_awaited_once()
+
+    async def test_zero_event_amount_uses_claim_record_fallback(self) -> None:
+        self.claims.find_one.return_value = {
+            "claimedAmount": {"amount": "900.00", "currency": "USD"},
+            "attachments": [{"id": "a1"}, {"id": "a2"}],
+        }
+        payload = {
+            "claimId": "claim-1",
+            "policyId": "policy-1",
+            "policyholderId": "holder-1",
+            "claimedAmount": {"amount": "0", "currency": "USD"},
+            "maxCoverageAmount": {"amount": "1000.00", "currency": "USD"},
+        }
+
+        await consumer.process_policy_validated(event_body(payload=payload))
+
+        score_doc = self.scores.replace_one.await_args.args[1]
+        self.assertEqual(45, score_doc["riskScore"])
+        self.assertEqual(["HIGH_COVERAGE_UTILIZATION"], score_doc["riskFlags"])
+        self.assertEqual("MEDIUM", score_doc["riskTier"])
+
+    async def test_missing_claim_record_still_scores_without_supporting_attachments(self) -> None:
+        payload = {
+            "claimId": "claim-1",
+            "policyId": "policy-1",
+            "policyholderId": "holder-1",
+        }
+
+        await consumer.process_policy_validated(event_body(payload=payload))
+
+        score_doc = self.scores.replace_one.await_args.args[1]
+        self.assertEqual(35, score_doc["riskScore"])
+        self.assertEqual(["NO_SUPPORTING_ATTACHMENTS"], score_doc["riskFlags"])
+
+    async def test_explicit_attachment_count_is_not_overridden_by_claim_document(self) -> None:
+        self.claims.find_one.return_value = {
+            "claimedAmount": {"amount": "600.00", "currency": "USD"},
+            "attachments": [{"id": "a1"}, {"id": "a2"}],
+        }
+        payload = {
+            "claimId": "claim-1",
+            "policyId": "policy-1",
+            "policyholderId": "holder-1",
+            "maxCoverageAmount": {"amount": "1000.00", "currency": "USD"},
+            "attachmentCount": 4,
+        }
+
+        await consumer.process_policy_validated(event_body(payload=payload))
+
+        score_doc = self.scores.replace_one.await_args.args[1]
+        self.assertEqual(30, score_doc["riskScore"])
+        self.assertEqual(["MODERATE_COVERAGE_UTILIZATION"], score_doc["riskFlags"])
+
+    async def test_converts_decimal128_claim_amount_from_mongo(self) -> None:
+        self.claims.find_one.return_value = {
+            "claimedAmount": {
+                "amount": Decimal128("900.00"),
+                "currency": "USD",
+            }
+        }
+        payload = {
+            "claimId": "claim-1",
+            "policyId": "policy-1",
+            "policyholderId": "holder-1",
+            "maxCoverageAmount": {"amount": "1000.00", "currency": "USD"},
+        }
+
+        await consumer.process_policy_validated(event_body(payload=payload))
+
+        score_doc = self.scores.replace_one.await_args.args[1]
+        self.assertEqual(65, score_doc["riskScore"])
+        self.assertEqual(
+            ["HIGH_COVERAGE_UTILIZATION", "NO_SUPPORTING_ATTACHMENTS"],
+            score_doc["riskFlags"],
+        )
 
 
 if __name__ == "__main__":

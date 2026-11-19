@@ -78,6 +78,42 @@ class ComputeRiskScoreTests(unittest.TestCase):
         self.assertEqual(15, score)
         self.assertEqual([], flags)
 
+    def test_missing_coverage_does_not_create_utilization_flag(self) -> None:
+        score, tier, flags, manual_review = compute_risk_score(make_payload("900", None, 2))
+
+        self.assertEqual(15, score)
+        self.assertEqual("LOW", tier)
+        self.assertEqual([], flags)
+        self.assertFalse(manual_review)
+
+    def test_moderate_utilization_without_attachments_requires_review(self) -> None:
+        score, tier, flags, manual_review = compute_risk_score(make_payload("500", "1000", 0))
+
+        self.assertEqual(50, score)
+        self.assertEqual("MEDIUM", tier)
+        self.assertEqual(
+            ["MODERATE_COVERAGE_UTILIZATION", "NO_SUPPORTING_ATTACHMENTS"], flags
+        )
+        self.assertTrue(manual_review)
+
+    def test_claim_amount_above_coverage_is_high_utilization(self) -> None:
+        score, _, flags, _ = compute_risk_score(make_payload("1500", "1000", 1))
+
+        self.assertEqual(45, score)
+        self.assertEqual(["HIGH_COVERAGE_UTILIZATION"], flags)
+
+    def test_zero_claim_amount_adds_no_utilization_risk(self) -> None:
+        score, _, flags, _ = compute_risk_score(make_payload("0", "1000", 1))
+
+        self.assertEqual(15, score)
+        self.assertEqual([], flags)
+
+    def test_positive_claim_with_zero_coverage_adds_no_utilization_flag(self) -> None:
+        score, _, flags, _ = compute_risk_score(make_payload("100", "0", 1))
+
+        self.assertEqual(15, score)
+        self.assertEqual([], flags)
+
 
 if __name__ == "__main__":
     unittest.main()

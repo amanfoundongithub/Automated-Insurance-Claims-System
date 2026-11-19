@@ -1,6 +1,6 @@
 # RabbitMQ local setup
 
-RabbitMQ carries claim-processing and settlement events between services. The Spring services declare their exchanges, queues, and bindings when they start; you normally do not need to create the project topology manually.
+RabbitMQ transports claim and settlement events between the six application services. The services declare the exchanges, queues, and bindings they use when they start; you do not need to create the project topology manually.
 
 ## Requirements
 
@@ -15,22 +15,23 @@ Run from a terminal:
 docker run -d \
   --name claims-rabbitmq \
   --restart unless-stopped \
-  -p 5672:5672 \
-  -p 15672:15672 \
+  -p 127.0.0.1:5672:5672 \
+  -p 127.0.0.1:15672:15672 \
+  -v claims-rabbitmq-data:/var/lib/rabbitmq \
   rabbitmq:3-management
 ```
 
-Wait until the broker responds:
+The named volume preserves broker data when the container is stopped or replaced. Wait for RabbitMQ to become ready:
 
 ```bash
 docker exec claims-rabbitmq rabbitmq-diagnostics -q ping
 ```
 
-The management UI is available at [http://localhost:15672](http://localhost:15672). For this local container, its default login is `guest` / `guest`.
+Open the management UI at [http://localhost:15672](http://localhost:15672). The default local login is `guest` / `guest`.
 
-## Connect the application
+## Connect the services
 
-The local Spring configurations expect the broker on the host at:
+For applications running directly on the host, the local Spring configurations and Python service defaults use:
 
 | Setting | Local value |
 | --- | --- |
@@ -39,35 +40,41 @@ The local Spring configurations expect the broker on the host at:
 | `RABBITMQ_USERNAME` | `guest` |
 | `RABBITMQ_PASSWORD` | `guest` |
 
-Use the management UI's **Connections**, **Exchanges**, and **Queues** tabs to check activity after starting the services. The project uses the topic exchanges `claims.events.topic` and `claims.events.dlx`. For example, settlement uses `settlement.requested`, `settlement.completed`, and `settlement.failed` routing keys.
+The project uses the topic exchanges `claims.events.topic` and `claims.events.dlx`. Services declare their queues and bindings during startup. Use the management UI's **Connections**, **Exchanges**, and **Queues** tabs to inspect broker activity.
 
-RabbitMQ restricts the built-in `guest` account to local connections. If a local application is denied access, or if applications are running in Docker, create a dedicated development account:
+RabbitMQ restricts the built-in `guest` account to connections from the local machine. If applications run in containers, create a dedicated development account instead. Run these commands once, replacing the example password with a local-only value:
 
 ```bash
 docker exec claims-rabbitmq rabbitmqctl add_user claims_dev replace-with-a-local-password
 docker exec claims-rabbitmq rabbitmqctl set_permissions -p / claims_dev ".*" ".*" ".*"
 ```
 
-Set `RABBITMQ_USERNAME=claims_dev` and `RABBITMQ_PASSWORD` to the same password in the application environment. When applications run in Docker, connect them to the same Docker network and set `RABBITMQ_HOST` to the RabbitMQ service/container name (for example, `claims-rabbitmq`). Do not enable remote access for `guest` or commit real passwords to the repository.
+Set `RABBITMQ_USERNAME=claims_dev` and `RABBITMQ_PASSWORD` to that password for the application. Do not commit credentials. For containerized applications, connect the application containers and RabbitMQ to the same user-defined Docker network, then set `RABBITMQ_HOST` to `claims-rabbitmq`.
 
-## Stop and restart
+## Stop, restart, or remove
 
 ```bash
 docker stop claims-rabbitmq
 docker start claims-rabbitmq
 ```
 
-To remove the container:
+Remove the container while retaining its data volume:
 
 ```bash
 docker rm -f claims-rabbitmq
 ```
 
+To delete the broker data as well, remove the volume:
+
+```bash
+docker volume rm claims-rabbitmq-data
+```
+
 ## Troubleshooting
 
 - **Connection refused:** confirm the broker is ready, port `5672` is available, and `RABBITMQ_HOST` is correct.
-- **Authentication refused:** verify the configured username and password. The `guest` account is only for local development connections.
-- **No queues or bindings are visible:** start the relevant service and check its logs. Spring declares that service's topology during startup.
-- **Check broker logs:** `docker logs claims-rabbitmq`.
+- **Authentication refused:** verify the configured username and password. Use the `guest` account only for host-local development.
+- **No queues or bindings are visible:** start the application services and check their logs; they declare their topology at startup.
+- **Inspect broker logs:** `docker logs claims-rabbitmq`.
 
-Do not expose the AMQP or management ports to an untrusted network. Use dedicated credentials and appropriate network controls outside local development.
+The published ports are bound to loopback for local development. Do not expose AMQP or the management UI to an untrusted network; use dedicated credentials and appropriate network controls outside local development.

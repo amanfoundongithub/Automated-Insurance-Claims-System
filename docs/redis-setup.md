@@ -1,6 +1,6 @@
 # Redis local setup
 
-The Spring services use Redis for event deduplication and idempotency. This guide starts a local Redis instance with Docker; it does not require adding a Redis dependency to the project.
+The application services use Redis to support request idempotency and event deduplication. This guide starts a local Redis instance with Docker; it does not add a Redis dependency to the project.
 
 ## Requirements
 
@@ -15,15 +15,13 @@ Run from a terminal:
 docker run -d \
   --name claims-redis \
   --restart unless-stopped \
-  -p 6379:6379 \
+  -p 127.0.0.1:6379:6379 \
   -v claims-redis-data:/data \
   redis:7-alpine \
   redis-server --appendonly yes
 ```
 
-The named volume keeps Redis data when the container is stopped or replaced.
-
-Check that Redis is ready:
+The named volume and append-only file preserve Redis data when the container is stopped or replaced. Check that Redis is ready:
 
 ```bash
 docker exec claims-redis redis-cli ping
@@ -35,35 +33,42 @@ Expected output:
 PONG
 ```
 
-## Connect the application
+## Connect the services
 
-The local Spring configuration expects Redis on the host at:
+For applications running directly on the host, use:
 
 | Setting | Local value |
 | --- | --- |
 | `REDIS_HOST` | `localhost` |
 | `REDIS_PORT` | `6379` |
-| `REDIS_TIMEOUT` | `2s` where configured |
 
-These settings are in each service's `src/main/resources/application-local.yaml`. If an application is itself running in Docker on the same Docker network, use the Redis container/service name (for example, `claims-redis`) for `REDIS_HOST` instead of `localhost`.
+These are the defaults in the Python services and are set in the Java services' local configuration. Where `REDIS_TIMEOUT` is configured, Java expects a duration such as `2s`; Python expects a number of seconds such as `2.0`.
 
-## Stop and restart
+If an application runs in a container, connect it and Redis to the same user-defined Docker network and set `REDIS_HOST=claims-redis`. `localhost` inside an application container points to that container, not to Redis.
+
+## Stop, restart, or remove
 
 ```bash
 docker stop claims-redis
 docker start claims-redis
 ```
 
-To remove only the container while retaining its data volume:
+Remove the container while retaining its data volume:
 
 ```bash
 docker rm -f claims-redis
 ```
 
+To delete the Redis data as well, remove the volume:
+
+```bash
+docker volume rm claims-redis-data
+```
+
 ## Troubleshooting
 
-- **Connection refused:** confirm the container is running with `docker ps` and that port `6379` is available.
-- **Wrong host from a container:** `localhost` inside an application container points to that container, not Redis. Use the Redis service/container name on the shared Docker network.
-- **Check Redis logs:** `docker logs claims-redis`.
+- **Connection refused:** confirm the container is running with `docker ps`, Redis is ready, and port `6379` is available.
+- **Wrong host from a container:** use `claims-redis` on a shared user-defined Docker network instead of `localhost`.
+- **Inspect Redis logs:** `docker logs claims-redis`.
 
-This setup has no Redis password and is intended for local development only. Do not expose port `6379` to an untrusted network.
+This local setup has no Redis password and publishes port `6379` only on loopback. Do not expose it to an untrusted network; use authentication and appropriate network controls outside local development.

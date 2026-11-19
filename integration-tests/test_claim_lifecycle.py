@@ -45,6 +45,7 @@ def request_json(method: str, url: str, payload=None, headers=None):
         with urlopen(request, timeout=10) as response:
             return response.status, json.loads(response.read())
     except HTTPError as error:
+        error.close()
         raise AssertionError(f"{method} {url} returned HTTP {error.code}") from error
 
 

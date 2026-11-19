@@ -154,15 +154,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     services:
-      mongodb:
-        image: mongo:7
-        ports:
-          - 27017:27017
-        options: >-
-          --health-cmd "mongosh --quiet --eval 'db.adminCommand({ ping: 1 }).ok'"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 10
       redis:
         image: redis:7-alpine
         ports:
@@ -185,7 +176,7 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     env:
-      MONGODB_URI: mongodb://127.0.0.1:27017/claims_integration?uuidRepresentation=standard
+      MONGODB_URI: mongodb://127.0.0.1:27017/claims_integration?replicaSet=rs0&uuidRepresentation=standard
       MONGODB_AUTO_INDEX_CREATION: 'true'
       REDIS_HOST: 127.0.0.1
       REDIS_PORT: '6379'
@@ -256,6 +247,45 @@ jobs:
           python -m pip install
           -r risk-scoring-service/requirements.txt
           -r valuation-reserve-service/requirements.txt
+
+      - name: Start MongoDB replica set
+        run: |
+          docker run --detach --name claims-mongodb --publish 27017:27017 mongo:7 \
+            mongod --replSet rs0 --bind_ip_all
+
+          ready=false
+          for attempt in $(seq 1 30); do
+            if docker exec claims-mongodb mongosh --quiet \
+              --eval 'quit(db.adminCommand({ ping: 1 }).ok ? 0 : 1)' >/dev/null 2>&1; then
+              ready=true
+              break
+            fi
+            sleep 2
+          done
+          if [ "$ready" != true ]; then
+            docker logs claims-mongodb
+            exit 1
+          fi
+
+          if ! docker exec claims-mongodb mongosh --quiet \
+            --eval 'rs.initiate({_id: "rs0", members: [{_id: 0, host: "127.0.0.1:27017"}]})'; then
+            docker logs claims-mongodb
+            exit 1
+          fi
+
+          ready=false
+          for attempt in $(seq 1 30); do
+            if docker exec claims-mongodb mongosh --quiet \
+              --eval 'quit(db.hello().isWritablePrimary ? 0 : 1)' >/dev/null 2>&1; then
+              ready=true
+              break
+            fi
+            sleep 2
+          done
+          if [ "$ready" != true ]; then
+            docker logs claims-mongodb
+            exit 1
+          fi
 
       - name: Build Java services
         run: |

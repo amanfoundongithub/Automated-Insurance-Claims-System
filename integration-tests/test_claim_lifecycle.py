@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 from urllib.request import Request, urlopen
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -52,8 +52,12 @@ class ClaimLifecycleIntegrationTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         mongo_uri = os.environ.get("MONGODB_URI", "")
-        if urlsplit(mongo_uri).hostname not in {"localhost", "127.0.0.1"}:
-            raise RuntimeError("Integration tests require a local test MongoDB URI")
+        parsed_mongo_uri = urlsplit(mongo_uri)
+        if (
+            parsed_mongo_uri.hostname not in {"localhost", "127.0.0.1"}
+            or "replicaSet" not in parse_qs(parsed_mongo_uri.query)
+        ):
+            raise RuntimeError("Integration tests require a local MongoDB replica-set URI")
 
         cls.processes = []
         cls.log_handles = []

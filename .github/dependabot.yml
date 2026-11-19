@@ -1,0 +1,30 @@
+version: 2
+updates:
+  - package-ecosystem: gradle
+    directory: /claims-ingestion-service
+    schedule:
+      interval: weekly
+  - package-ecosystem: gradle
+    directory: /policy-service
+    schedule:
+      interval: weekly
+  - package-ecosystem: gradle
+    directory: /settlement-payout-service
+    schedule:
+      interval: weekly
+  - package-ecosystem: gradle
+    directory: /claims-orchestrator
+    schedule:
+      interval: weekly
+  - package-ecosystem: pip
+    directory: /risk-scoring-service
+    schedule:
+      interval: weekly
+  - package-ecosystem: pip
+    directory: /valuation-reserve-service
+    schedule:
+      interval: weekly
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

@@ -1,5 +1,6 @@
 package com.claims_engine.orchestrator.domain;
 
+import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
@@ -30,6 +31,10 @@ public class ClaimLifecycleDocument {
     private ClaimLifecycleStatus status;
     private String correlationId;
     private String lastEventType;
+    private Money maxCoverageAmount;
+    private Money deductibleAmount;
+    private BigDecimal coPayRatio;
+    private List<String> policyValidationReasons;
 
     @CreatedDate
     private Instant createdAt;
@@ -72,6 +77,20 @@ public class ClaimLifecycleDocument {
 
     public String getLastEventType() { return lastEventType; }
     public void setLastEventType(String lastEventType) { this.lastEventType = lastEventType; }
+
+    public Money getMaxCoverageAmount() { return maxCoverageAmount; }
+    public void setMaxCoverageAmount(Money maxCoverageAmount) { this.maxCoverageAmount = maxCoverageAmount; }
+
+    public Money getDeductibleAmount() { return deductibleAmount; }
+    public void setDeductibleAmount(Money deductibleAmount) { this.deductibleAmount = deductibleAmount; }
+
+    public BigDecimal getCoPayRatio() { return coPayRatio; }
+    public void setCoPayRatio(BigDecimal coPayRatio) { this.coPayRatio = coPayRatio; }
+
+    public List<String> getPolicyValidationReasons() { return policyValidationReasons; }
+    public void setPolicyValidationReasons(List<String> policyValidationReasons) {
+        this.policyValidationReasons = policyValidationReasons;
+    }
 
     public Instant getCreatedAt() { return createdAt; }
     public void setCreatedAt(Instant createdAt) { this.createdAt = createdAt; }

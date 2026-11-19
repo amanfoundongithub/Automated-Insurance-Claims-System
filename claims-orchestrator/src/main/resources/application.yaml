@@ -42,5 +42,9 @@ claims:
     dlq-exchange: ${CLAIMS_BROKER_DLQ_EXCHANGE}
     claim-submitted-queue: ${CLAIMS_CLAIM_SUBMITTED_QUEUE}
     claim-submitted-routing-key: ${CLAIMS_CLAIM_SUBMITTED_ROUTING_KEY}
+    policy-validated-queue: ${CLAIMS_POLICY_VALIDATED_QUEUE}
+    policy-validated-routing-key: ${CLAIMS_POLICY_VALIDATED_ROUTING_KEY}
+    policy-validation-failed-queue: ${CLAIMS_POLICY_VALIDATION_FAILED_QUEUE}
+    policy-validation-failed-routing-key: ${CLAIMS_POLICY_VALIDATION_FAILED_ROUTING_KEY}
   dedup:
     redis-ttl-hours: ${CLAIMS_DEDUP_REDIS_TTL_HOURS}

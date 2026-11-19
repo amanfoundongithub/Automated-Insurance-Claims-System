@@ -20,3 +20,7 @@ CLAIMS_BROKER_DLQ_EXCHANGE: claims.events.dlx
 CLAIMS_CLAIM_SUBMITTED_QUEUE: q.orchestrator.claim-submitted
 CLAIMS_CLAIM_SUBMITTED_ROUTING_KEY: claim.submitted
 CLAIMS_DEDUP_REDIS_TTL_HOURS: 72
+CLAIMS_POLICY_VALIDATED_QUEUE: q.orchestrator.policy-validated
+CLAIMS_POLICY_VALIDATED_ROUTING_KEY: policy.validated
+CLAIMS_POLICY_VALIDATION_FAILED_QUEUE: q.orchestrator.policy-validation-failed
+CLAIMS_POLICY_VALIDATION_FAILED_ROUTING_KEY: policy.validation-failed

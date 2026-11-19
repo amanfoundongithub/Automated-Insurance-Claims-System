@@ -27,6 +27,18 @@ public class RabbitMqConfig {
     @Value("${claims.broker.claim-submitted-routing-key}")
     private String claimSubmittedRoutingKey;
 
+    @Value("${claims.broker.policy-validated-queue:q.orchestrator.policy-validated}")
+    private String policyValidatedQueueName;
+
+    @Value("${claims.broker.policy-validated-routing-key:policy.validated}")
+    private String policyValidatedRoutingKey;
+
+    @Value("${claims.broker.policy-validation-failed-queue:q.orchestrator.policy-validation-failed}")
+    private String policyValidationFailedQueueName;
+
+    @Value("${claims.broker.policy-validation-failed-routing-key:policy.validation-failed}")
+    private String policyValidationFailedRoutingKey;
+
     @Bean
     public TopicExchange claimsEventsExchange() {
         return ExchangeBuilder.topicExchange(exchangeName)
@@ -75,7 +87,45 @@ public class RabbitMqConfig {
     }
 
     @Bean
+    public Queue policyValidatedQueue() {
+        return QueueBuilder.durable(policyValidatedQueueName)
+                .withArgument("x-dead-letter-exchange", dlqExchangeName)
+                .withArgument("x-dead-letter-routing-key", "orchestrator.dlq")
+                .build();
+    }
+
+    @Bean
+    public Binding policyValidatedBinding(
+            Queue policyValidatedQueue,
+            TopicExchange claimsEventsExchange
+    ) {
+        return BindingBuilder.bind(policyValidatedQueue)
+                .to(claimsEventsExchange)
+                .with(policyValidatedRoutingKey);
+    }
+
+    @Bean
+    public Queue policyValidationFailedQueue() {
+        return QueueBuilder.durable(policyValidationFailedQueueName)
+                .withArgument("x-dead-letter-exchange", dlqExchangeName)
+                .withArgument("x-dead-letter-routing-key", "orchestrator.dlq")
+                .build();
+    }
+
+    @Bean
+    public Binding policyValidationFailedBinding(
+            Queue policyValidationFailedQueue,
+            TopicExchange claimsEventsExchange
+    ) {
+        return BindingBuilder.bind(policyValidationFailedQueue)
+                .to(claimsEventsExchange)
+                .with(policyValidationFailedRoutingKey);
+    }
+    
+
+    @Bean
     public MessageConverter jsonMessageConverter() {
         return new JacksonJsonMessageConverter();
     }
+
 }

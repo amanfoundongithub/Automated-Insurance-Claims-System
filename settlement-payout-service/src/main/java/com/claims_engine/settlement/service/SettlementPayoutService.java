@@ -7,18 +7,22 @@ import com.claims_engine.settlement.domain.PayoutRepository;
 import com.claims_engine.settlement.domain.PayoutStatus;
 import com.claims_engine.settlement.domain.ProcessedEventDocument;
 import com.claims_engine.settlement.domain.ProcessedEventRepository;
+import com.claims_engine.settlement.gateway.GatewayOutcome;
+import com.claims_engine.settlement.gateway.PayoutGatewayClient;
 import com.claims_engine.settlement.messaging.EventEnvelope;
 import com.claims_engine.settlement.messaging.SettlementCompletedPayload;
 import com.claims_engine.settlement.messaging.SettlementEventPublisher;
 import com.claims_engine.settlement.messaging.SettlementFailedPayload;
 import com.claims_engine.settlement.messaging.SettlementRequestedPayload;
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
@@ -30,6 +34,7 @@ public class SettlementPayoutService {
     private final PayoutRepository payoutRepository;
     private final PayoutAuditLogRepository auditLogRepository;
     private final ProcessedEventRepository processedEventRepository;
+    private final PayoutGatewayClient payoutGatewayClient;
     private final SettlementEventPublisher eventPublisher;
     private final StringRedisTemplate redisTemplate;
 
@@ -67,6 +72,12 @@ public class SettlementPayoutService {
         }
 
         Instant now = Instant.now();
+        BigDecimal normalizedAmount = payload.netPayout() != null && payload.netPayout().amount() != null
+                ? payload.netPayout().amount().setScale(2, RoundingMode.HALF_UP)
+                : BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP);
+        String currency = payload.netPayout() != null && payload.netPayout().currency() != null
+                ? payload.netPayout().currency().trim().toUpperCase()
+                : null;
 
         if (payout == null) {
             payout = PayoutDocument.builder()
@@ -75,8 +86,8 @@ public class SettlementPayoutService {
                     .policyId(payload.policyId())
                     .policyholderId(payload.policyholderId())
                     .settlementReference(payload.settlementReference())
-                    .amount(payload.netPayout().amount())
-                    .currency(payload.netPayout().currency())
+                    .amount(normalizedAmount)
+                    .currency(currency)
                     .riskTier(payload.riskTier())
                     .status(PayoutStatus.INITIATED)
                     .attemptCount(0)
@@ -95,6 +106,9 @@ public class SettlementPayoutService {
                     "Payout record initialized for settlementReference=" + payload.settlementReference(),
                     now
             );
+        } else {
+            payout.setAmount(normalizedAmount);
+            payout.setCurrency(currency);
         }
 
         PayoutStatus previousStatus = payout.getStatus();
@@ -116,86 +130,88 @@ public class SettlementPayoutService {
                 Instant.now()
         );
 
-        BigDecimal payoutAmount = payout.getAmount();
-        if (payoutAmount == null || payoutAmount.compareTo(BigDecimal.ZERO) <= 0) {
-            Instant failedAt = Instant.now();
-            payout.setStatus(PayoutStatus.FAILED);
-            payout.setFailureReason("Payout amount must be greater than zero");
-            payout.setRetryable(false);
-            payout.setFailedAt(failedAt);
-            payoutRepository.save(payout);
+        GatewayOutcome outcome = payoutGatewayClient.executePayout(payout);
 
-            recordAudit(
-                    payout,
-                    eventId,
-                    "SettlementFailed",
-                    PayoutStatus.PROCESSING,
-                    PayoutStatus.FAILED,
-                    correlationId,
-                    eventId.toString(),
-                    payout.getFailureReason(),
-                    failedAt
-            );
+        switch (outcome) {
+            case GatewayOutcome.Settled settled -> {
+                payout.setStatus(PayoutStatus.SETTLED);
+                payout.setAmount(settled.settledAmount());
+                payout.setCurrency(settled.currency());
+                payout.setProviderReference(settled.providerReference());
+                payout.setFailureReason(null);
+                payout.setRetryable(false);
+                payout.setFailedAt(null);
+                payout.setSettledAt(settled.settledAt());
+                payoutRepository.save(payout);
 
-            markEventProcessed(eventId, claimId, envelope.eventType());
+                recordAudit(
+                        payout,
+                        eventId,
+                        "SettlementCompleted",
+                        PayoutStatus.PROCESSING,
+                        PayoutStatus.SETTLED,
+                        correlationId,
+                        eventId.toString(),
+                        "Settled via providerReference=" + settled.providerReference(),
+                        settled.settledAt()
+                );
 
-            eventPublisher.publishSettlementFailed(
-                    new SettlementFailedPayload(
-                            claimId,
-                            payout.getPolicyId(),
-                            payout.getPolicyholderId(),
-                            payout.getSettlementReference(),
-                            payout.getPayoutId(),
-                            payout.getFailureReason(),
-                            false,
-                            failedAt
-                    ),
-                    correlationId,
-                    eventId.toString()
-            );
-            return;
+                markEventProcessed(eventId, claimId, envelope.eventType());
+
+                eventPublisher.publishSettlementCompleted(
+                        new SettlementCompletedPayload(
+                                claimId,
+                                payout.getPolicyId(),
+                                payout.getPolicyholderId(),
+                                payout.getSettlementReference(),
+                                payout.getPayoutId(),
+                                settled.providerReference(),
+                                settled.settledAmount(),
+                                settled.currency(),
+                                settled.settledAt()
+                        ),
+                        correlationId,
+                        eventId.toString()
+                );
+            }
+            case GatewayOutcome.Failed failed -> {
+                Instant failedAt = failed.failedAt() != null ? failed.failedAt() : Instant.now();
+                payout.setStatus(PayoutStatus.FAILED);
+                payout.setFailureReason(failed.reason());
+                payout.setRetryable(failed.retryable());
+                payout.setFailedAt(failedAt);
+                payoutRepository.save(payout);
+
+                recordAudit(
+                        payout,
+                        eventId,
+                        "SettlementFailed",
+                        PayoutStatus.PROCESSING,
+                        PayoutStatus.FAILED,
+                        correlationId,
+                        eventId.toString(),
+                        failed.reason() + " (retryable=" + failed.retryable() + ")",
+                        failedAt
+                );
+
+                markEventProcessed(eventId, claimId, envelope.eventType());
+
+                eventPublisher.publishSettlementFailed(
+                        new SettlementFailedPayload(
+                                claimId,
+                                payout.getPolicyId(),
+                                payout.getPolicyholderId(),
+                                payout.getSettlementReference(),
+                                payout.getPayoutId(),
+                                failed.reason(),
+                                failed.retryable(),
+                                failedAt
+                        ),
+                        correlationId,
+                        eventId.toString()
+                );
+            }
         }
-
-        // Execute provider/rail transfer (simulated deterministic gateway reference; swap with external client when ready)
-        String providerReference = "UTR-" + UUID.randomUUID().toString().substring(0, 12).toUpperCase();
-        Instant settledAt = Instant.now();
-
-        payout.setStatus(PayoutStatus.SETTLED);
-        payout.setProviderReference(providerReference);
-        payout.setFailureReason(null);
-        payout.setRetryable(false);
-        payout.setSettledAt(settledAt);
-        payoutRepository.save(payout);
-
-        recordAudit(
-                payout,
-                eventId,
-                "SettlementCompleted",
-                PayoutStatus.PROCESSING,
-                PayoutStatus.SETTLED,
-                correlationId,
-                eventId.toString(),
-                "Settled via providerReference=" + providerReference,
-                settledAt
-        );
-
-        markEventProcessed(eventId, claimId, envelope.eventType());
-
-        eventPublisher.publishSettlementCompleted(
-                new SettlementCompletedPayload(
-                        claimId,
-                        payout.getPolicyId(),
-                        payout.getPolicyholderId(),
-                        payout.getSettlementReference(),
-                        payout.getPayoutId(),
-                        providerReference,
-                        payout.getAmount(),
-                        payout.getCurrency(),
-                        settledAt
-                ),
-                correlationId,
-                eventId.toString()
-        );
     }
 
     private boolean isAlreadyProcessed(UUID eventId) {
@@ -212,14 +228,18 @@ public class SettlementPayoutService {
     }
 
     private void markEventProcessed(UUID eventId, String claimId, String eventType) {
-        processedEventRepository.save(
-                ProcessedEventDocument.builder()
-                        .eventId(eventId)
-                        .claimId(claimId)
-                        .eventType(eventType)
-                        .processedAt(Instant.now())
-                        .build()
-        );
+        try {
+            processedEventRepository.save(
+                    ProcessedEventDocument.builder()
+                            .eventId(eventId)
+                            .claimId(claimId)
+                            .eventType(eventType)
+                            .processedAt(Instant.now())
+                            .build()
+            );
+        } catch (DuplicateKeyException ex) {
+            log.info("Concurrent duplicate eventId caught on insert: eventId={} claimId={}", eventId, claimId);
+        }
         String redisKey = "settlement:dedup:event:" + eventId;
         try {
             redisTemplate.opsForValue().set(redisKey, "1", Duration.ofHours(dedupTtlHours));

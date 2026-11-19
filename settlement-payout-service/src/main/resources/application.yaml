@@ -38,5 +38,10 @@ settlement:
     settlement-requested-routing-key: ${SETTLEMENT_REQUESTED_ROUTING_KEY}
     settlement-completed-routing-key: ${SETTLEMENT_COMPLETED_ROUTING_KEY}
     settlement-failed-routing-key: ${SETTLEMENT_FAILED_ROUTING_KEY}
+  gateway:
+    max-attempts: ${SETTLEMENT_GATEWAY_MAX_ATTEMPTS:3}
+    retry-backoff: ${SETTLEMENT_GATEWAY_RETRY_BACKOFF:200ms}
+    simulate-transient-failures: ${SETTLEMENT_GATEWAY_SIMULATE_TRANSIENT_FAILURES:0}
+    simulate-permanent-failure: ${SETTLEMENT_GATEWAY_SIMULATE_PERMANENT_FAILURE:false}
   dedup:
     ttl-hours: ${SETTLEMENT_DEDUP_TTL_HOURS}

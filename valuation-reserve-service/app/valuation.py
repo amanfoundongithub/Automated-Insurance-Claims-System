@@ -1,3 +1,4 @@
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any, Optional
@@ -8,11 +9,14 @@ ZERO = Decimal("0.00")
 ONE = Decimal("1.00")
 TWO_DP = Decimal("0.01")
 FOUR_DP = Decimal("0.0001")
+DEFAULT_CREDIBILITY_K = Decimal("10")
+MIN_RECORDS_FOR_EMPIRICAL_K = 5
 
 
 @dataclass(frozen=True)
 class ValuationBreakdown:
     credibility_z: Decimal
+    credibility_k: Decimal
     prior_reserve_factor: Decimal
     observed_reserve_factor: Decimal
     effective_reserve_factor: Decimal
@@ -53,6 +57,107 @@ def compute_credibility_z(exposure_count: Decimal, credibility_k: Decimal) -> De
     if n <= ZERO:
         return ZERO.quantize(FOUR_DP, rounding=ROUND_HALF_UP)
     return (n / (n + k)).quantize(FOUR_DP, rounding=ROUND_HALF_UP)
+
+
+def estimate_credibility_k(
+    grouped_amounts: Optional[Mapping[str, Sequence[Decimal | int | float | str]]],
+    default_k: Decimal = DEFAULT_CREDIBILITY_K,
+    min_records: int = MIN_RECORDS_FOR_EMPIRICAL_K,
+    min_k: Decimal = ONE,
+    max_k: Decimal = Decimal("100"),
+) -> Decimal:
+    """
+    Estimates K = EPV / VHM from grouped historical amounts when total valid
+    records >= `min_records` (default 5). Falls back to `default_k` when sample
+    size is smaller than `min_records` or group dispersion cannot be estimated.
+    """
+    if not isinstance(grouped_amounts, Mapping):
+        return default_k
+
+    cleaned_groups: list[tuple[str, list[Decimal]]] = []
+    total_records = 0
+
+    for group_key, values in grouped_amounts.items():
+        if not isinstance(values, Sequence) or isinstance(values, (str, bytes)):
+            continue
+        amounts: list[Decimal] = []
+        for raw in values:
+            if raw is None:
+                continue
+            try:
+                amt = Decimal(str(raw))
+            except Exception:
+                continue
+            if amt >= Decimal("0"):
+                amounts.append(amt)
+        total_records += len(amounts)
+        if len(amounts) >= 2:
+            cleaned_groups.append((str(group_key), amounts))
+
+    if total_records < min_records or len(cleaned_groups) < 2:
+        return default_k
+
+    group_means: list[Decimal] = []
+    group_counts: list[int] = []
+    weighted_within_var_sum = Decimal("0")
+    total_dof = 0
+
+    for _, amounts in cleaned_groups:
+        n = len(amounts)
+        mean = sum(amounts, Decimal("0")) / Decimal(n)
+        sq_diff = sum(((x - mean) ** 2 for x in amounts), Decimal("0"))
+        sample_var = sq_diff / Decimal(n - 1)
+
+        group_means.append(mean)
+        group_counts.append(n)
+        weighted_within_var_sum += Decimal(n - 1) * sample_var
+        total_dof += (n - 1)
+
+    if total_dof <= 0:
+        return default_k
+
+    epv = weighted_within_var_sum / Decimal(total_dof)
+    grand_mean = sum(group_means, Decimal("0")) / Decimal(len(group_means))
+    raw_between_var = sum(((m - grand_mean) ** 2 for m in group_means), Decimal("0")) / Decimal(
+        len(group_means) - 1
+    )
+
+    avg_group_n = sum((Decimal(c) for c in group_counts), Decimal("0")) / Decimal(len(group_counts))
+    sampling_noise = epv / avg_group_n if avg_group_n > Decimal("0") else Decimal("0")
+    vhm = raw_between_var - sampling_noise
+
+    if vhm <= Decimal("0.0001"):
+        return default_k
+
+    raw_k = epv / vhm
+    clamped_k = min(max_k, max(min_k, raw_k))
+    return clamped_k.quantize(FOUR_DP, rounding=ROUND_HALF_UP)
+
+
+def _resolve_credibility_k(
+    claim_doc: Optional[dict[str, Any]],
+    policy_doc: Optional[dict[str, Any]],
+) -> Decimal:
+    default_k = _extract_optional_decimal(claim_doc, "credibilityK")
+    if default_k is None:
+        default_k = _extract_optional_decimal(policy_doc, "credibilityK") or DEFAULT_CREDIBILITY_K
+    if default_k <= Decimal("0"):
+        default_k = DEFAULT_CREDIBILITY_K
+
+    grouped_history: Any = None
+    for doc in (claim_doc, policy_doc):
+        if isinstance(doc, dict):
+            for key in ("historicalAmountsByGroup", "historical_amounts_by_group", "claimHistoryByType"):
+                if doc.get(key) is not None:
+                    grouped_history = doc.get(key)
+                    break
+        if grouped_history is not None:
+            break
+
+    if grouped_history is not None:
+        return estimate_credibility_k(grouped_history, default_k=default_k)
+
+    return default_k
 
 
 def calculate_valuation_details(
@@ -123,7 +228,6 @@ def calculate_valuation_details(
     baseline_reserve = (net_payout * prior_factor).quantize(TWO_DP, rounding=ROUND_HALF_UP)
 
     # 5. Optional credibility-weighted reserve factor: Z = n / (n + K)
-    # Looks for optional priorExposureCount / priorClaimCount and credibilityK / observedReserveFactor
     exposure_n = _extract_optional_decimal(
         claim_doc, "priorExposureCount", "priorClaimCount", "exposureCount"
     )
@@ -132,9 +236,7 @@ def calculate_valuation_details(
             policy_doc, "priorExposureCount", "priorClaimCount", "exposureCount"
         ) or ZERO
 
-    credibility_k = _extract_optional_decimal(claim_doc, "credibilityK")
-    if credibility_k is None:
-        credibility_k = _extract_optional_decimal(policy_doc, "credibilityK") or Decimal("10")
+    credibility_k = _resolve_credibility_k(claim_doc, policy_doc)
 
     observed_factor = _extract_optional_decimal(
         claim_doc, "observedReserveFactor", "historicalReserveFactor"
@@ -164,6 +266,7 @@ def calculate_valuation_details(
 
     breakdown = ValuationBreakdown(
         credibility_z=credibility_z,
+        credibility_k=credibility_k,
         prior_reserve_factor=prior_factor,
         observed_reserve_factor=observed_factor,
         effective_reserve_factor=effective_factor,

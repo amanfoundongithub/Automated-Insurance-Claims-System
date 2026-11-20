@@ -1,5 +1,7 @@
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal
+from typing import Any
 
 from app.models import PolicyValidatedPayload
 
@@ -7,6 +9,8 @@ ZERO = Decimal("0")
 ONE = Decimal("1")
 FOUR_DP = Decimal("0.0001")
 TWO_DP = Decimal("0.01")
+DEFAULT_CREDIBILITY_K = Decimal("10")
+MIN_RECORDS_FOR_EMPIRICAL_K = 5
 
 
 @dataclass(frozen=True)
@@ -60,6 +64,101 @@ def _has_explicit_deductible(payload: PolicyValidatedPayload) -> bool:
     )
 
 
+def estimate_credibility_k(
+    grouped_amounts: Mapping[str, Sequence[Decimal | int | float | str]] | None,
+    default_k: Decimal = DEFAULT_CREDIBILITY_K,
+    min_records: int = MIN_RECORDS_FOR_EMPIRICAL_K,
+    min_k: Decimal = ONE,
+    max_k: Decimal = Decimal("100"),
+) -> Decimal:
+    """
+    Estimates K = EPV / VHM from grouped historical claim amounts when total valid
+    records >= `min_records` (default 5). Uses `default_k` when sample size is small
+    or when within/between-group variance cannot be reliably estimated.
+    """
+    if not isinstance(grouped_amounts, Mapping):
+        return default_k
+
+    cleaned_groups: list[tuple[str, list[Decimal]]] = []
+    total_records = 0
+
+    for group_key, values in grouped_amounts.items():
+        if not isinstance(values, Sequence) or isinstance(values, (str, bytes)):
+            continue
+        amounts: list[Decimal] = []
+        for raw in values:
+            if raw is None:
+                continue
+            try:
+                amt = Decimal(str(raw))
+            except Exception:
+                continue
+            if amt >= ZERO:
+                amounts.append(amt)
+        total_records += len(amounts)
+        if len(amounts) >= 2:
+            cleaned_groups.append((str(group_key), amounts))
+
+    # Only compute empirical K when at least `min_records` (5) records exist across at least 2 groups
+    if total_records < min_records or len(cleaned_groups) < 2:
+        return default_k
+
+    group_means: list[Decimal] = []
+    group_counts: list[int] = []
+    weighted_within_var_sum = ZERO
+    total_dof = 0
+
+    for _, amounts in cleaned_groups:
+        n = len(amounts)
+        mean = sum(amounts, ZERO) / Decimal(n)
+        sq_diff = sum(((x - mean) ** 2 for x in amounts), ZERO)
+        sample_var = sq_diff / Decimal(n - 1)
+
+        group_means.append(mean)
+        group_counts.append(n)
+        weighted_within_var_sum += Decimal(n - 1) * sample_var
+        total_dof += (n - 1)
+
+    if total_dof <= 0:
+        return default_k
+
+    epv = weighted_within_var_sum / Decimal(total_dof)
+    grand_mean = sum(group_means, ZERO) / Decimal(len(group_means))
+    raw_between_var = sum(((m - grand_mean) ** 2 for m in group_means), ZERO) / Decimal(
+        len(group_means) - 1
+    )
+
+    avg_group_n = sum((Decimal(c) for c in group_counts), ZERO) / Decimal(len(group_counts))
+    sampling_noise = epv / avg_group_n if avg_group_n > ZERO else ZERO
+    vhm = raw_between_var - sampling_noise
+
+    if vhm <= Decimal("0.0001"):
+        return default_k
+
+    raw_k = epv / vhm
+    clamped_k = min(max_k, max(min_k, raw_k))
+    return clamped_k.quantize(FOUR_DP, rounding=ROUND_HALF_UP)
+
+
+def _resolve_credibility_k(payload: PolicyValidatedPayload) -> Decimal:
+    default_k = _extract_decimal(
+        payload, "credibilityK", "credibility_k", default=DEFAULT_CREDIBILITY_K
+    )
+    if default_k <= ZERO:
+        default_k = DEFAULT_CREDIBILITY_K
+
+    grouped_history: Any = getattr(payload, "historicalAmountsByGroup", None)
+    if grouped_history is None:
+        grouped_history = getattr(payload, "historical_amounts_by_group", None)
+    if grouped_history is None:
+        grouped_history = getattr(payload, "claimHistoryByType", None)
+
+    if grouped_history is not None:
+        return estimate_credibility_k(grouped_history, default_k=default_k)
+
+    return default_k
+
+
 def evaluate_risk(payload: PolicyValidatedPayload) -> RiskAssessment:
     score = 15
     flags: list[str] = []
@@ -108,9 +207,7 @@ def evaluate_risk(payload: PolicyValidatedPayload) -> RiskAssessment:
             default=prior_claims,
         ),
     )
-    credibility_k = _extract_decimal(payload, "credibilityK", "credibility_k", default=Decimal("10"))
-    if credibility_k <= ZERO:
-        credibility_k = Decimal("10")
+    credibility_k = _resolve_credibility_k(payload)
 
     n_dec = Decimal(prior_claims)
     if n_dec > ZERO:
@@ -168,6 +265,7 @@ def evaluate_risk(payload: PolicyValidatedPayload) -> RiskAssessment:
             "attachments": attachment_points,
             "experience": experience_points,
             "severity": severity_points,
+            "credibility_k": credibility_k,
         },
     )
 

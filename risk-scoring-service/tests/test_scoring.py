@@ -114,6 +114,27 @@ class ComputeRiskScoreTests(unittest.TestCase):
         self.assertEqual(15, score)
         self.assertEqual([], flags)
 
+    def test_explicit_low_deductible_cushion_adds_severity_points(self) -> None:
+        payload = PolicyValidatedPayload(
+            claimId="claim-1",
+            policyId="policy-1",
+            policyholderId="holder-1",
+            claimedAmount=Money(amount=Decimal("900"), currency="USD"),
+            maxCoverageAmount=Money(amount=Decimal("1000"), currency="USD"),
+            attachmentCount=1,
+            deductibleAmount=Money(
+                amount=Decimal("10"),
+                currency="USD",
+            ),
+        )
+
+        score, tier, flags, manual_review = compute_risk_score(payload)
+
+        self.assertEqual(50, score)
+        self.assertEqual("MEDIUM", tier)
+        self.assertIn("LOW_DEDUCTIBLE_CUSHION", flags)
+        self.assertTrue(manual_review)
+
 
 if __name__ == "__main__":
     unittest.main()

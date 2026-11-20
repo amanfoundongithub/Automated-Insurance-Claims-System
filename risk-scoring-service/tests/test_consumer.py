@@ -2,13 +2,24 @@ import json
 import os
 import unittest
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from bson.decimal128 import Decimal128
 
 os.environ.setdefault("MONGODB_URI", "mongodb://localhost/test")
 
 from app import consumer
+
+
+class EmptyAsyncCursor:
+    def limit(self, _limit: int) -> "EmptyAsyncCursor":
+        return self
+
+    def __aiter__(self) -> "EmptyAsyncCursor":
+        return self
+
+    async def __anext__(self) -> dict:
+        raise StopAsyncIteration
 
 
 def event_body(event_id: str = "event-1", payload: dict | None = None) -> bytes:
@@ -33,7 +44,10 @@ def event_body(event_id: str = "event-1", payload: dict | None = None) -> bytes:
 class ProcessPolicyValidatedTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self.redis = SimpleNamespace(exists=AsyncMock(return_value=False), set=AsyncMock())
-        self.claims = SimpleNamespace(find_one=AsyncMock(return_value=None))
+        self.claims = SimpleNamespace(
+            find_one=AsyncMock(return_value=None),
+            find=MagicMock(return_value=EmptyAsyncCursor()),
+        )
         self.processed = SimpleNamespace(
             find_one=AsyncMock(return_value=None), update_one=AsyncMock()
         )

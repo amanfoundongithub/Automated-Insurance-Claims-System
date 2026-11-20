@@ -2,8 +2,11 @@ import json
 import logging
 import uuid
 from datetime import datetime, timezone
+from decimal import Decimal
+from typing import Any
 
 import aio_pika
+from bson.decimal128 import Decimal128
 
 from app.config import settings
 from app.db import (
@@ -15,9 +18,116 @@ from app.db import (
     valuations_col,
 )
 from app.models import EventEnvelope, RiskScoredPayload
-from app.valuation import calculate_valuation
+from app.valuation import calculate_valuation_details
 
 logger = logging.getLogger(__name__)
+
+ZERO = Decimal("0")
+
+
+def _to_decimal(val: Any) -> Decimal | None:
+    if val is None:
+        return None
+    if isinstance(val, Decimal128):
+        return val.to_decimal()
+    if isinstance(val, Decimal):
+        return val
+    try:
+        return Decimal(str(val))
+    except Exception:
+        return None
+
+
+async def _load_policy_doc(
+    policy_id: str | None,
+    claim_doc: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    doc: dict[str, Any] | None = None
+    if policy_id:
+        try:
+            found = await policies_col.find_one({"_id": policy_id})
+            if isinstance(found, dict):
+                doc = found
+            else:
+                found_by_field = await policies_col.find_one({"policyId": policy_id})
+                if isinstance(found_by_field, dict):
+                    doc = found_by_field
+        except Exception as exc:
+            logger.warning("Policy lookup skipped for policyId=%s: %s", policy_id, exc)
+
+    merged: dict[str, Any] = dict(doc) if isinstance(doc, dict) else {}
+    if isinstance(claim_doc, dict):
+        for key in ("maxCoverageAmount", "deductibleAmount", "coPayRatio", "subLimitAmount", "ulaeRate"):
+            if key not in merged and key in claim_doc and claim_doc[key] is not None:
+                merged[key] = claim_doc[key]
+    return merged or None
+
+
+async def _enrich_claim_with_credibility_context(
+    claim_id: str,
+    policy_id: str | None,
+    policyholder_id: str | None,
+    claim_doc: dict[str, Any] | None,
+    policy_doc: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """
+    Builds an enriched claim dict containing credibility exposure count (n),
+    credibility constant (K), and observed reserve factor when historical data exists,
+    without mutating or failing if history is empty.
+    """
+    enriched: dict[str, Any] = dict(claim_doc) if isinstance(claim_doc, dict) else {}
+
+    existing_exposure = _to_decimal(
+        enriched.get("priorExposureCount")
+        or enriched.get("priorClaimCount")
+        or enriched.get("exposureCount")
+    )
+    if existing_exposure is None and isinstance(policy_doc, dict):
+        existing_exposure = _to_decimal(
+            policy_doc.get("priorExposureCount")
+            or policy_doc.get("priorClaimCount")
+            or policy_doc.get("exposureCount")
+        )
+
+    if existing_exposure is None:
+        try:
+            history_filter: dict[str, Any] = {"_id": {"$ne": claim_id}}
+            if policyholder_id:
+                history_filter["policyholderId"] = policyholder_id
+            elif policy_id:
+                history_filter["policyId"] = policy_id
+
+            if policyholder_id or policy_id:
+                count = 0
+                observed_ratios: list[Decimal] = []
+                async for hist_doc in claims_col.find(history_filter).limit(100):
+                    if not isinstance(hist_doc, dict):
+                        continue
+                    count += 1
+                    hist_id = hist_doc.get("_id") or hist_doc.get("claimId")
+                    if hist_id:
+                        hist_val = await valuations_col.find_one({"_id": hist_id})
+                        if isinstance(hist_val, dict):
+                            net = _to_decimal(hist_val.get("estimatedNetPayout"))
+                            res = _to_decimal(hist_val.get("recommendedReserve"))
+                            if net is not None and net > ZERO and res is not None and res > ZERO:
+                                observed_ratios.append(res / net)
+
+                enriched["priorExposureCount"] = Decimal(count)
+                if observed_ratios and "observedReserveFactor" not in enriched:
+                    avg_ratio = sum(observed_ratios, ZERO) / Decimal(len(observed_ratios))
+                    enriched["observedReserveFactor"] = avg_ratio
+        except Exception as exc:
+            logger.warning(
+                "Credibility history lookup failed for claimId=%s: %s", claim_id, exc
+            )
+
+    if "credibilityK" not in enriched:
+        configured_k = _to_decimal(getattr(settings, "credibility_k", None))
+        if configured_k is not None and configured_k > ZERO:
+            enriched["credibilityK"] = configured_k
+
+    return enriched
 
 
 async def process_risk_scored(raw_body: bytes) -> None:
@@ -36,9 +146,20 @@ async def process_risk_scored(raw_body: bytes) -> None:
         return
 
     claim_doc = await claims_col.find_one({"_id": claim_id})
-    policy_doc = await policies_col.find_one({"_id": policy_id})
+    policy_doc = await _load_policy_doc(policy_id, claim_doc if isinstance(claim_doc, dict) else None)
+    enriched_claim_doc = await _enrich_claim_with_credibility_context(
+        claim_id=claim_id,
+        policy_id=policy_id,
+        policyholder_id=payload.policyholderId,
+        claim_doc=claim_doc if isinstance(claim_doc, dict) else None,
+        policy_doc=policy_doc,
+    )
 
-    result = calculate_valuation(claim_doc, policy_doc, payload.riskTier)
+    result, breakdown = calculate_valuation_details(
+        enriched_claim_doc,
+        policy_doc,
+        payload.riskTier,
+    )
     now = datetime.now(timezone.utc)
     outbox_event_id = str(uuid.uuid4())
 
@@ -59,6 +180,14 @@ async def process_risk_scored(raw_body: bytes) -> None:
         "coPayDeductionAmount": str(result.coPayDeductionAmount),
         "estimatedNetPayout": str(result.estimatedNetPayout),
         "recommendedReserve": str(result.recommendedReserve),
+        "credibilityZ": str(breakdown.credibility_z),
+        "reserveBreakdown": {
+            "priorReserveFactor": str(breakdown.prior_reserve_factor),
+            "observedReserveFactor": str(breakdown.observed_reserve_factor),
+            "effectiveReserveFactor": str(breakdown.effective_reserve_factor),
+            "baselineReserve": str(breakdown.baseline_reserve),
+            "credibilityReserve": str(breakdown.credibility_reserve),
+        },
         "correlationId": envelope.correlationId,
         "valuedAt": now,
     }
@@ -106,12 +235,13 @@ async def process_risk_scored(raw_body: bytes) -> None:
     await redis_client.set(redis_key, "1", ex=settings.dedup_ttl_hours * 3600)
 
     logger.info(
-        "Valued claimId=%s: netPayout=%s %s reserve=%s %s outboxEventId=%s",
+        "Valued claimId=%s: netPayout=%s %s reserve=%s %s credibilityZ=%s outboxEventId=%s",
         claim_id,
         result.estimatedNetPayout,
         result.currency,
         result.recommendedReserve,
         result.currency,
+        breakdown.credibility_z,
         outbox_event_id,
     )
 

@@ -2,11 +2,22 @@ import json
 import os
 import unittest
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 os.environ.setdefault("MONGODB_URI", "mongodb://localhost/test")
 
 from app import consumer
+
+
+class EmptyAsyncCursor:
+    def limit(self, _limit: int) -> "EmptyAsyncCursor":
+        return self
+
+    def __aiter__(self) -> "EmptyAsyncCursor":
+        return self
+
+    async def __anext__(self) -> dict:
+        raise StopAsyncIteration
 
 
 def event_body(event_id: str = "event-1", requires_manual_review: bool = False) -> bytes:
@@ -31,7 +42,8 @@ class ProcessRiskScoredTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self.redis = SimpleNamespace(exists=AsyncMock(return_value=False), set=AsyncMock())
         self.claims = SimpleNamespace(
-            find_one=AsyncMock(return_value={"claimedAmount": {"amount": "1000", "currency": "USD"}})
+            find_one=AsyncMock(return_value={"claimedAmount": {"amount": "1000", "currency": "USD"}}),
+            find=MagicMock(return_value=EmptyAsyncCursor()),
         )
         self.policies = SimpleNamespace(
             find_one=AsyncMock(

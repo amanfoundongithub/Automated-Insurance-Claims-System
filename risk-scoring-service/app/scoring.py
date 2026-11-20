@@ -53,6 +53,13 @@ def _extract_decimal(obj: object, *attr_names: str, default: Decimal) -> Decimal
     return default
 
 
+def _has_explicit_deductible(payload: PolicyValidatedPayload) -> bool:
+    return (
+        getattr(payload, "deductibleAmount", None) is not None
+        or getattr(payload, "deductible_amount", None) is not None
+    )
+
+
 def evaluate_risk(payload: PolicyValidatedPayload) -> RiskAssessment:
     score = 15
     flags: list[str] = []
@@ -131,7 +138,7 @@ def evaluate_risk(payload: PolicyValidatedPayload) -> RiskAssessment:
 
     # If a high-utilization claim has a very small deductible cushion (< 5% of claimed amount),
     # a larger share of the loss passes straight through to payout/reserve.
-    if claimed > ZERO and deductible >= ZERO:
+    if claimed > ZERO and deductible >= ZERO and _has_explicit_deductible(payload):
         deductible_ratio = (deductible / claimed).quantize(FOUR_DP, rounding=ROUND_HALF_UP)
         if deductible_ratio < Decimal("0.05") and utilization_points > 0:
             severity_points += 5

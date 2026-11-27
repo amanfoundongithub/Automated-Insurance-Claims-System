@@ -13,12 +13,12 @@ import org.springframework.data.mongodb.config.EnableMongoAuditing;
 public class MongoConfig {
 
     @Bean
-    public MongoClientSettingsBuilderCustomizer uuidRepresentationCustomizer() {
+    MongoClientSettingsBuilderCustomizer uuidRepresentationCustomizer() {
         return builder -> builder.uuidRepresentation(UuidRepresentation.STANDARD);
     }
 
     @Bean
-    public MongoTransactionManager transactionManager(MongoDatabaseFactory dbFactory) {
+    MongoTransactionManager transactionManager(MongoDatabaseFactory dbFactory) {
         return new MongoTransactionManager(dbFactory);
     }
     

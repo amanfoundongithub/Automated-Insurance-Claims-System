@@ -18,6 +18,8 @@ import com.claims_engine.ingestion.domain.Money;
 import com.claims_engine.ingestion.messaging.ClaimSubmittedPayload;
 import com.claims_engine.ingestion.outbox.OutboxEventDocument;
 import com.claims_engine.ingestion.outbox.OutboxRepository;
+import com.claims_engine.ingestion.service.impl.ClaimIngestionServiceImpl;
+
 import java.math.BigDecimal;
 import java.time.Duration;
 import java.time.Instant;
@@ -35,7 +37,7 @@ class ClaimIngestionServiceTest {
     private OutboxRepository outboxRepository;
     private StringRedisTemplate redisTemplate;
     private ValueOperations<String, String> redisValues;
-    private ClaimIngestionService service;
+    private ClaimIngestionServiceImpl service;
 
     @BeforeEach
     @SuppressWarnings("unchecked")
@@ -45,7 +47,7 @@ class ClaimIngestionServiceTest {
         redisTemplate = org.mockito.Mockito.mock(StringRedisTemplate.class);
         redisValues = org.mockito.Mockito.mock(ValueOperations.class);
         when(redisTemplate.opsForValue()).thenReturn(redisValues);
-        service = new ClaimIngestionService(
+        service = new ClaimIngestionServiceImpl(
                 claimRepository, outboxRepository, redisTemplate, "ingestion", "claims", "claim.submitted", 24);
     }
 

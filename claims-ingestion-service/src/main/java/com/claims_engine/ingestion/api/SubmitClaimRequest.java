@@ -10,6 +10,7 @@ import java.util.List;
 import java.util.Map;
 
 public record SubmitClaimRequest(
+
         @NotBlank(message = "policyId is required")
         String policyId,
 
@@ -30,4 +31,5 @@ public record SubmitClaimRequest(
 
         @Valid
         List<AttachmentItem> attachments
+        
 ) {}

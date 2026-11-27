@@ -59,28 +59,22 @@ public class ClaimIngestionServiceImpl implements ClaimIngestionService {
     }
 
     @Transactional
-    public ClaimResponse submitClaim(
-            SubmitClaimRequest request,
-            String idempotencyKey,
-            String correlationId
-    ) {
+    @Override
+    public ClaimResponse submitClaim(SubmitClaimRequest request, String idempotencyKey, String correlationId) {
+        LOGGER.info("Fetching the claims from Redis for idempotencyKey={}", idempotencyKey);
         String redisKey = "idem:claim:" + idempotencyKey;
         String existingClaimId = redisTemplate.opsForValue().get(redisKey);
         if (existingClaimId != null) {
+            LOGGER.info("Found the existing idempotencyKey={} in Redis", idempotencyKey);
             return claimRepository.findById(existingClaimId)
                     .map(existing -> toResponse(existing, null))
                     .orElseGet(() -> findByDbIdempotencyKeyOrCreate(request, idempotencyKey, correlationId, redisKey));
         }
-
+        LOGGER.info("Not found in Redis, creating fresh event...");
         return findByDbIdempotencyKeyOrCreate(request, idempotencyKey, correlationId, redisKey);
     }
 
-    private ClaimResponse findByDbIdempotencyKeyOrCreate(
-            SubmitClaimRequest request,
-            String idempotencyKey,
-            String correlationId,
-            String redisKey
-    ) {
+    private ClaimResponse findByDbIdempotencyKeyOrCreate(SubmitClaimRequest request, String idempotencyKey, String correlationId, String redisKey) {
         var existingOpt = claimRepository.findByIdempotencyKey(idempotencyKey);
         if (existingOpt.isPresent()) {
             ClaimDocument existing = existingOpt.get();

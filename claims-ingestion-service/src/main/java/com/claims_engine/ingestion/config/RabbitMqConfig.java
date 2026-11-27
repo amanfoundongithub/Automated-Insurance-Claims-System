@@ -24,49 +24,42 @@ public class RabbitMqConfig {
     private String dlqExchangeName;
 
     @Bean
-    public TopicExchange claimsEventsExchange() {
+    TopicExchange claimsEventsExchange() {
         return ExchangeBuilder.topicExchange(exchangeName)
                 .durable(true)
                 .build();
     }
 
     @Bean
-    public TopicExchange claimsDeadLetterExchange() {
+    TopicExchange claimsDeadLetterExchange() {
         return ExchangeBuilder.topicExchange(dlqExchangeName)
                 .durable(true)
                 .build();
     }
 
     @Bean
-    public Queue ingestionDeadLetterQueue() {
+    Queue ingestionDeadLetterQueue() {
         return QueueBuilder.durable("q.ingestion.dlq").build();
     }
 
     @Bean
-    public Binding ingestionDeadLetterBinding(
-            Queue ingestionDeadLetterQueue,
-            TopicExchange claimsDeadLetterExchange
-    ) {
+    Binding ingestionDeadLetterBinding(Queue ingestionDeadLetterQueue, TopicExchange claimsDeadLetterExchange) {
         return BindingBuilder.bind(ingestionDeadLetterQueue)
                 .to(claimsDeadLetterExchange)
                 .with("#");
     }
 
     @Bean
-    public MessageConverter jsonMessageConverter() {
+    MessageConverter jsonMessageConverter() {
         return new JacksonJsonMessageConverter();
     }
 
     @Bean
-    public RabbitTemplate rabbitTemplate(
-            ConnectionFactory connectionFactory,
-            MessageConverter jsonMessageConverter
-    ) {
+    RabbitTemplate rabbitTemplate(ConnectionFactory connectionFactory, MessageConverter jsonMessageConverter) {
         RabbitTemplate template = new RabbitTemplate(connectionFactory);
         template.setMessageConverter(jsonMessageConverter);
         template.setMandatory(true);
         return template;
     }
-
 
 }
